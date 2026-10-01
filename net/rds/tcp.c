@@ -330,25 +330,21 @@ int rds_tcp_laddr_check(struct net *net, const struct in6_addr *addr,
 	/* If the scope_id is specified, check only those addresses
 	 * hosted on the specified interface.
 	 */
-	rcu_read_lock();
 	if (scope_id != 0) {
+		rcu_read_lock();
 		dev = dev_get_by_index_rcu(net, scope_id);
 		/* scope_id is not valid... */
 		if (!dev) {
 			rcu_read_unlock();
 			return -EADDRNOTAVAIL;
 		}
+		rcu_read_unlock();
 	}
 #if IS_ENABLED(CONFIG_IPV6)
-	if (ipv6_mod_enabled()) {
-		ret = ipv6_chk_addr(net, addr, dev, 0);
-		if (ret) {
-			rcu_read_unlock();
-			return 0;
-		}
-	}
+	ret = ipv6_chk_addr(net, addr, dev, 0);
+	if (ret)
+		return 0;
 #endif
-	rcu_read_unlock();
 	return -EADDRNOTAVAIL;
 }
 
@@ -491,14 +487,26 @@ struct rds_tcp_net {
 /* All module specific customizations to the RDS-TCP socket should be done in
  * rds_tcp_tune() and applied after socket creation.
  */
-void rds_tcp_tune(struct socket *sock)
+bool rds_tcp_tune(struct socket *sock)
 {
 	struct sock *sk = sock->sk;
 	struct net *net = sock_net(sk);
-	struct rds_tcp_net *rtn = net_generic(net, rds_tcp_netid);
+	struct rds_tcp_net *rtn;
 
 	tcp_sock_set_nodelay(sock->sk);
 	lock_sock(sk);
+	/* TCP timer functions might access net namespace even after
+	 * a process which created this net namespace terminated.
+	 */
+	if (!sk->sk_net_refcnt) {
+		if (!maybe_get_net(net)) {
+			release_sock(sk);
+			return false;
+		}
+		sk_net_refcnt_upgrade(sk);
+		put_net(net);
+	}
+	rtn = net_generic(net, rds_tcp_netid);
 	if (rtn->sndbuf_size > 0) {
 		sk->sk_sndbuf = rtn->sndbuf_size;
 		sk->sk_userlocks |= SOCK_SNDBUF_LOCK;
@@ -508,6 +516,7 @@ void rds_tcp_tune(struct socket *sock)
 		sk->sk_userlocks |= SOCK_RCVBUF_LOCK;
 	}
 	release_sock(sk);
+	return true;
 }
 
 static void rds_tcp_accept_worker(struct work_struct *work)
@@ -552,7 +561,8 @@ static __net_init int rds_tcp_init_net(struct net *net)
 	}
 	tbl[RDS_TCP_SNDBUF].data = &rtn->sndbuf_size;
 	tbl[RDS_TCP_RCVBUF].data = &rtn->rcvbuf_size;
-	rtn->rds_tcp_sysctl = register_net_sysctl(net, "net/rds/tcp", tbl);
+	rtn->rds_tcp_sysctl = register_net_sysctl_sz(net, "net/rds/tcp", tbl,
+						     ARRAY_SIZE(rds_tcp_sysctl_table));
 	if (!rtn->rds_tcp_sysctl) {
 		pr_warn("could not register sysctl\n");
 		err = -ENOMEM;
@@ -702,7 +712,7 @@ static void rds_tcp_exit(void)
 }
 module_exit(rds_tcp_exit);
 
-static int rds_tcp_init(void)
+static int __init rds_tcp_init(void)
 {
 	int ret;
 

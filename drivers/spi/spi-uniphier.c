@@ -142,7 +142,7 @@ static void uniphier_spi_set_mode(struct spi_device *spi)
 	 * FSTRT    start frame timing
 	 *          0: rising edge of clock, 1: falling edge of clock
 	 */
-	switch (spi->mode & (SPI_CPOL | SPI_CPHA)) {
+	switch (spi->mode & SPI_MODE_X_MASK) {
 	case SPI_MODE_0:
 		/* CKPHS=1, CKINIT=0, CKDLY=1, FSTRT=0 */
 		val1 = SSI_CKS_CKPHS | SSI_CKS_CKDLY;
@@ -659,8 +659,6 @@ static int uniphier_spi_probe(struct platform_device *pdev)
 	priv->master = master;
 	priv->is_save_param = false;
 
-	init_completion(&priv->xfer_done);
-
 	priv->base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(priv->base)) {
 		ret = PTR_ERR(priv->base);
@@ -691,6 +689,8 @@ static int uniphier_spi_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "failed to request IRQ\n");
 		goto out_disable_clk;
 	}
+
+	init_completion(&priv->xfer_done);
 
 	clk_rate = clk_get_rate(priv->clk);
 
@@ -751,7 +751,7 @@ static int uniphier_spi_probe(struct platform_device *pdev)
 
 	master->max_dma_len = min(dma_tx_burst, dma_rx_burst);
 
-	ret = spi_register_master(master);
+	ret = devm_spi_register_master(&pdev->dev, master);
 	if (ret)
 		goto out_release_dma;
 
@@ -775,14 +775,10 @@ out_master_put:
 	return ret;
 }
 
-static int uniphier_spi_remove(struct platform_device *pdev)
+static void uniphier_spi_remove(struct platform_device *pdev)
 {
 	struct spi_master *master = platform_get_drvdata(pdev);
 	struct uniphier_spi_priv *priv = spi_master_get_devdata(master);
-
-	spi_master_get(master);
-
-	spi_unregister_master(master);
 
 	if (master->dma_tx)
 		dma_release_channel(master->dma_tx);
@@ -790,10 +786,6 @@ static int uniphier_spi_remove(struct platform_device *pdev)
 		dma_release_channel(master->dma_rx);
 
 	clk_disable_unprepare(priv->clk);
-
-	spi_master_put(master);
-
-	return 0;
 }
 
 static const struct of_device_id uniphier_spi_match[] = {
@@ -804,7 +796,7 @@ MODULE_DEVICE_TABLE(of, uniphier_spi_match);
 
 static struct platform_driver uniphier_spi_driver = {
 	.probe = uniphier_spi_probe,
-	.remove = uniphier_spi_remove,
+	.remove_new = uniphier_spi_remove,
 	.driver = {
 		.name = "uniphier-spi",
 		.of_match_table = uniphier_spi_match,

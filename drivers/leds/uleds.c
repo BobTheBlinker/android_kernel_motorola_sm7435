@@ -102,8 +102,7 @@ static ssize_t uleds_write(struct file *file, const char __user *buffer,
 
 	name = udev->user_dev.name;
 	if (!name[0] || !strcmp(name, ".") || !strcmp(name, "..") ||
-	    strnchr(name, sizeof(udev->user_dev.name), '/') ||
-	    !strnchr(name, sizeof(udev->user_dev.name), '\0')) {
+	    strchr(name, '/')) {
 		ret = -EINVAL;
 		goto out;
 	}
@@ -210,17 +209,7 @@ static struct miscdevice uleds_misc = {
 	.name		= ULEDS_NAME,
 };
 
-static int __init uleds_init(void)
-{
-	return misc_register(&uleds_misc);
-}
-module_init(uleds_init);
-
-static void __exit uleds_exit(void)
-{
-	misc_deregister(&uleds_misc);
-}
-module_exit(uleds_exit);
+module_misc_device(uleds_misc);
 
 MODULE_AUTHOR("David Lechner <david@lechnology.com>");
 MODULE_DESCRIPTION("Userspace driver for the LED subsystem");

@@ -47,8 +47,8 @@
 #include <linux/tty_flip.h>
 
 #include <linux/atomic.h>
+#include <linux/io.h>
 #include <asm/bootinfo.h>
-#include <asm/io.h>
 
 #include <asm/dec/interrupts.h>
 #include <asm/dec/kn01.h>
@@ -115,7 +115,7 @@ static void dz_out(struct dz_port *dport, unsigned offset, u16 value)
  * rs_stop () and rs_start ()
  *
  * These routines are called before setting or resetting
- * tty->stopped. They enable or disable transmitter interrupts,
+ * tty->flow.stopped. They enable or disable transmitter interrupts,
  * as necessary.
  * ------------------------------------------------------------
  */
@@ -181,8 +181,8 @@ static inline void dz_receive_chars(struct dz_mux *mux)
 	struct dz_port *dport = &mux->dport[0];
 	struct uart_icount *icount;
 	int lines_rx[DZ_NB_PORT] = { [0 ... DZ_NB_PORT - 1] = 0 };
-	unsigned char ch, flag;
 	u16 status;
+	u8 ch, flag;
 	int i;
 
 	while ((status = dz_in(dport, DZ_RBUF)) & DZ_DVAL) {
@@ -279,9 +279,8 @@ static inline void dz_transmit_chars(struct dz_mux *mux)
 	 * so we go one char at a time) :-<
 	 */
 	tmp = xmit->buf[xmit->tail];
-	xmit->tail = (xmit->tail + 1) & (DZ_XMIT_SIZE - 1);
 	dz_out(dport, DZ_TDR, tmp);
-	dport->port.icount.tx++;
+	uart_xmit_advance(&dport->port, 1);
 
 	if (uart_circ_chars_pending(xmit) < DZ_WAKEUP_CHARS)
 		uart_write_wakeup(&dport->port);
@@ -544,47 +543,13 @@ static int dz_encode_baud_rate(unsigned int baud)
 static void dz_reset(struct dz_port *dport)
 {
 	struct dz_mux *mux = dport->mux;
-	unsigned short tcr;
-	int loops = 10000;
-	int line;
 
 	if (mux->initialised)
 		return;
 
-	tcr = dz_in(dport, DZ_TCR);
-
-	/* Do not disturb any ongoing transmissions.  */
-	if (dz_in(dport, DZ_CSR) & DZ_MSE) {
-		unsigned short csr, mask;
-
-		mask = tcr;
-		while ((mask & DZ_LNENB) && loops--) {
-			csr = dz_in(dport, DZ_CSR);
-			if (!(csr & DZ_TRDY))
-				continue;
-			mask &= ~(1 << ((csr & DZ_TLINE) >> 8));
-			dz_out(dport, DZ_TCR, mask);
-			iob();
-			udelay(2);		/* 1.4us TRDY recovery.  */
-		}
-		udelay(1200);			/* Transmitter drain.  */
-	}
-
 	dz_out(dport, DZ_CSR, DZ_CLR);
 	while (dz_in(dport, DZ_CSR) & DZ_CLR);
 	iob();
-
-	/*
-	 * Set parameters across all lines such as not to interfere
-	 * with the initial PROM-based console.  Otherwise any output
-	 * produced before the console handover would cause the system
-	 * firmware to produce rubbish.
-	 */
-	for (line = 0; line < DZ_NB_PORT; line++)
-		dz_out(dport, DZ_LPR, DZ_B9600 | DZ_CS8 | line);
-
-	/* Re-enable transmission for the initial PROM-based console.  */
-	dz_out(dport, DZ_TCR, tcr);
 
 	/* Enable scanning.  */
 	dz_out(dport, DZ_CSR, DZ_MSE);
@@ -593,7 +558,7 @@ static void dz_reset(struct dz_port *dport)
 }
 
 static void dz_set_termios(struct uart_port *uport, struct ktermios *termios,
-			   struct ktermios *old_termios)
+			   const struct ktermios *old_termios)
 {
 	struct dz_port *dport = to_dport(uport);
 	unsigned long flags;
@@ -626,9 +591,12 @@ static void dz_set_termios(struct uart_port *uport, struct ktermios *termios,
 
 	baud = uart_get_baud_rate(uport, termios, old_termios, 50, 9600);
 	bflag = dz_encode_baud_rate(baud);
-	if (bflag < 0)	{			/* Try to keep unchanged.  */
-		baud = uart_get_baud_rate(uport, old_termios, NULL, 50, 9600);
-		bflag = dz_encode_baud_rate(baud);
+	if (bflag < 0)	{
+		if (old_termios) {
+			/* Keep unchanged. */
+			baud = tty_termios_baud_rate(old_termios);
+			bflag = dz_encode_baud_rate(baud);
+		}
 		if (bflag < 0)	{		/* Resort to 9600.  */
 			baud = 9600;
 			bflag = DZ_B9600;
@@ -665,6 +633,26 @@ static void dz_set_termios(struct uart_port *uport, struct ktermios *termios,
 
 	spin_unlock_irqrestore(&dport->port.lock, flags);
 }
+
+/*
+ * Hack alert!
+ * Required solely so that the initial PROM-based console
+ * works undisturbed in parallel with this one.
+ */
+static void dz_pm(struct uart_port *uport, unsigned int state,
+		  unsigned int oldstate)
+{
+	struct dz_port *dport = to_dport(uport);
+	unsigned long flags;
+
+	spin_lock_irqsave(&dport->port.lock, flags);
+	if (state < 3)
+		dz_start_tx(&dport->port);
+	else
+		dz_stop_tx(&dport->port);
+	spin_unlock_irqrestore(&dport->port.lock, flags);
+}
+
 
 static const char *dz_type(struct uart_port *uport)
 {
@@ -761,6 +749,7 @@ static const struct uart_ops dz_ops = {
 	.startup	= dz_startup,
 	.shutdown	= dz_shutdown,
 	.set_termios	= dz_set_termios,
+	.pm		= dz_pm,
 	.type		= dz_type,
 	.release_port	= dz_release_port,
 	.request_port	= dz_request_port,
@@ -815,7 +804,7 @@ static void __init dz_init_ports(void)
  * restored.  Welcome to the world of PDP-11!
  * -------------------------------------------------------------------
  */
-static void dz_console_putchar(struct uart_port *uport, int ch)
+static void dz_console_putchar(struct uart_port *uport, unsigned char ch)
 {
 	struct dz_port *dport = to_dport(uport);
 	unsigned long flags;
@@ -885,7 +874,10 @@ static int __init dz_console_setup(struct console *co, char *options)
 	if (ret)
 		return ret;
 
+	spin_lock_init(&dport->port.lock);	/* For dz_pm().  */
+
 	dz_reset(dport);
+	dz_pm(uport, 0, -1);
 
 	if (options)
 		uart_parse_options(options, &baud, &parity, &bits, &flow);

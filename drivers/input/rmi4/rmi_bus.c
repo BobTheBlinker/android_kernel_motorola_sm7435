@@ -90,6 +90,7 @@ int rmi_register_transport_device(struct rmi_transport_dev *xport)
 
 	rmi_dev->dev.bus = &rmi_bus_type;
 	rmi_dev->dev.type = &rmi_device_type;
+	rmi_dev->dev.parent = xport->dev;
 
 	xport->rmi_dev = rmi_dev;
 
@@ -284,9 +285,9 @@ void rmi_unregister_function(struct rmi_function *fn)
 }
 
 /**
- * rmi_register_function_handler - register a handler for an RMI function
+ * __rmi_register_function_handler - register a handler for an RMI function
  * @handler: RMI handler that should be registered.
- * @module: pointer to module that implements the handler
+ * @owner: pointer to module that implements the handler
  * @mod_name: name of the module implementing the handler
  *
  * This function performs additional setup of RMI function handler and
@@ -447,13 +448,11 @@ static int __init rmi_bus_init(void)
 	if (error) {
 		pr_err("%s: error registering the RMI physical driver: %d\n",
 			__func__, error);
-		goto err_unregister_function_handlers;
+		goto err_unregister_bus;
 	}
 
 	return 0;
 
-err_unregister_function_handlers:
-	rmi_unregister_function_handlers();
 err_unregister_bus:
 	bus_unregister(&rmi_bus_type);
 	return error;

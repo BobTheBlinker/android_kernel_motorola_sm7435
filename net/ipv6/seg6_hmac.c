@@ -35,8 +35,7 @@
 #include <net/xfrm.h>
 
 #include <crypto/hash.h>
-#include <crypto/sha.h>
-#include <crypto/algapi.h>
+#include <crypto/utils.h>
 #include <net/seg6.h>
 #include <net/genetlink.h>
 #include <net/seg6_hmac.h>
@@ -245,8 +244,6 @@ bool seg6_hmac_validate_skb(struct sk_buff *skb)
 	struct inet6_dev *idev;
 
 	idev = __in6_dev_get(skb->dev);
-	if (!idev)
-		return false;
 
 	srh = (struct ipv6_sr_hdr *)skb_transport_header(skb);
 
@@ -418,9 +415,7 @@ int __net_init seg6_hmac_net_init(struct net *net)
 {
 	struct seg6_pernet_data *sdata = seg6_pernet(net);
 
-	rhashtable_init(&sdata->hmac_infos, &rht_params);
-
-	return 0;
+	return rhashtable_init(&sdata->hmac_infos, &rht_params);
 }
 
 void seg6_hmac_exit(void)

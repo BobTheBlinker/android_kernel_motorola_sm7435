@@ -360,7 +360,7 @@
  * Return: -1 on no match, bit position on 'match_only', 0 otherwise.
  */
 int pipapo_refill(unsigned long *map, int len, int rules, unsigned long *dst,
-		  union nft_pipapo_map_bucket *mt, bool match_only)
+		  const union nft_pipapo_map_bucket *mt, bool match_only)
 {
 	unsigned long bitset;
 	int k, ret = -1;
@@ -412,9 +412,9 @@ bool nft_pipapo_lookup(const struct net *net, const struct nft_set *set,
 	struct nft_pipapo_scratch *scratch;
 	unsigned long *res_map, *fill_map;
 	u8 genmask = nft_genmask_cur(net);
+	const struct nft_pipapo_match *m;
+	const struct nft_pipapo_field *f;
 	const u8 *rp = (const u8 *)key;
-	struct nft_pipapo_match *m;
-	struct nft_pipapo_field *f;
 	bool map_index;
 	int i;
 
@@ -519,13 +519,12 @@ static struct nft_pipapo_elem *pipapo_get(const struct net *net,
 {
 	struct nft_pipapo_elem *ret = ERR_PTR(-ENOENT);
 	struct nft_pipapo *priv = nft_set_priv(set);
-	struct nft_pipapo_match *m = priv->clone;
 	unsigned long *res_map, *fill_map = NULL;
-	struct nft_pipapo_field *f;
+	const struct nft_pipapo_match *m;
+	const struct nft_pipapo_field *f;
 	int i;
 
-	if (m->bsize_max == 0)
-		return ret;
+	m = priv->clone;
 
 	res_map = kmalloc_array(m->bsize_max, sizeof(*res_map), GFP_ATOMIC);
 	if (!res_map) {
@@ -608,7 +607,7 @@ static void *nft_pipapo_get(const struct net *net, const struct nft_set *set,
 			    const struct nft_set_elem *elem, unsigned int flags)
 {
 	return pipapo_get(net, set, (const u8 *)elem->key.val.data,
-			  nft_genmask_cur(net), get_jiffies_64());
+			 nft_genmask_cur(net), get_jiffies_64());
 }
 
 /**
@@ -668,11 +667,6 @@ static int pipapo_resize(struct nft_pipapo_field *f, int old_rules, int rules)
 	}
 
 mt:
-	if (rules > (INT_MAX / sizeof(*new_mt))) {
-		kvfree(new_lt);
-		return -ENOMEM;
-	}
-
 	new_mt = kvmalloc(rules * sizeof(*new_mt), GFP_KERNEL);
 	if (!new_mt) {
 		kvfree(new_lt);
@@ -1324,8 +1318,7 @@ static struct nft_pipapo_match *pipapo_clone(struct nft_pipapo_match *old)
 	struct nft_pipapo_match *new;
 	int i;
 
-	new = kmalloc(sizeof(*new) + sizeof(*dst) * old->field_count,
-		      GFP_KERNEL);
+	new = kmalloc(struct_size(new, f, old->field_count), GFP_KERNEL);
 	if (!new)
 		return ERR_PTR(-ENOMEM);
 
@@ -1366,20 +1359,11 @@ static struct nft_pipapo_match *pipapo_clone(struct nft_pipapo_match *old)
 		       src->bsize * sizeof(*dst->lt) *
 		       src->groups * NFT_PIPAPO_BUCKETS(src->bb));
 
-		if (src->rules > 0) {
-			if (src->rules > (INT_MAX / sizeof(*src->mt)))
-				goto out_mt;
+		dst->mt = kvmalloc(src->rules * sizeof(*src->mt), GFP_KERNEL);
+		if (!dst->mt)
+			goto out_mt;
 
-			dst->mt = kvmalloc_array(src->rules, sizeof(*src->mt),
-						 GFP_KERNEL);
-			if (!dst->mt)
-				goto out_mt;
-
-			memcpy(dst->mt, src->mt, src->rules * sizeof(*src->mt));
-		} else {
-			dst->mt = NULL;
-		}
-
+		memcpy(dst->mt, src->mt, src->rules * sizeof(*src->mt));
 		src++;
 		dst++;
 	}
@@ -1548,7 +1532,6 @@ static void pipapo_drop(struct nft_pipapo_match *m,
 	int i;
 
 	nft_pipapo_for_each_field(f, i, m) {
-		bool last = i == m->field_count - 1;
 		int g;
 
 		for (g = 0; g < f->groups; g++) {
@@ -1568,7 +1551,7 @@ static void pipapo_drop(struct nft_pipapo_match *m,
 		}
 
 		pipapo_unmap(f->mt, f->rules, rulemap[i].to, rulemap[i].n,
-			     last ? 0 : rulemap[i + 1].n, last);
+			     rulemap[i + 1].n, i == m->field_count - 1);
 		if (pipapo_resize(f, f->rules, f->rules - rulemap[i].n)) {
 			/* We can ignore this, a failure to shrink tables down
 			 * doesn't make tables invalid.
@@ -1583,38 +1566,36 @@ static void pipapo_drop(struct nft_pipapo_match *m,
 
 static void nft_pipapo_gc_deactivate(struct net *net, struct nft_set *set,
 				     struct nft_pipapo_elem *e)
+
 {
 	struct nft_set_elem elem = {
-		.priv   = e,
+		.priv	= e,
 	};
 
 	nft_setelem_data_deactivate(net, set, &elem);
 }
 
 /**
- * pipapo_gc_scan() - Drop expired entries from set and link them to gc list
- * @_set:	nftables API set representation
+ * pipapo_gc() - Drop expired entries from set, destroy start and end elements
+ * @set:	nftables API set representation
  * @m:		Matching data
  */
-static void pipapo_gc_scan(const struct nft_set *_set, struct nft_pipapo_match *m)
+static void pipapo_gc(struct nft_set *set, struct nft_pipapo_match *m)
 {
-	struct nft_set *set = (struct nft_set *) _set;
 	struct nft_pipapo *priv = nft_set_priv(set);
 	struct net *net = read_pnet(&set->net);
 	u64 tstamp = nft_net_tstamp(net);
 	int rules_f0, first_rule = 0;
+	struct nft_pipapo_elem *e;
 	struct nft_trans_gc *gc;
 
 	gc = nft_trans_gc_alloc(set, 0, GFP_KERNEL);
 	if (!gc)
 		return;
 
-	list_add(&gc->list, &priv->gc_head);
-
 	while ((rules_f0 = pipapo_rules_same_key(m->f, first_rule))) {
 		union nft_pipapo_map_bucket rulemap[NFT_PIPAPO_MAX_FIELDS];
-		struct nft_pipapo_field *f;
-		struct nft_pipapo_elem *e;
+		const struct nft_pipapo_field *f;
 		int i, start, rules_fx;
 
 		start = first_rule;
@@ -1634,19 +1615,16 @@ static void pipapo_gc_scan(const struct nft_set *_set, struct nft_pipapo_match *
 		f--;
 		i--;
 		e = f->mt[rulemap[i].to].e;
+
 		/* synchronous gc never fails, there is no need to set on
 		 * NFT_SET_ELEM_DEAD_BIT.
 		 */
 		if (__nft_set_elem_expired(&e->ext, tstamp)) {
 			priv->dirty = true;
 
-			if (!nft_trans_gc_space(gc)) {
-				gc = nft_trans_gc_alloc(set, 0, GFP_KERNEL);
-				if (!gc)
-					return;
-
-				list_add(&gc->list, &priv->gc_head);
-			}
+			gc = nft_trans_gc_queue_sync(gc, GFP_ATOMIC);
+			if (!gc)
+				return;
 
 			nft_pipapo_gc_deactivate(net, set, e);
 			pipapo_drop(m, rulemap);
@@ -1660,21 +1638,10 @@ static void pipapo_gc_scan(const struct nft_set *_set, struct nft_pipapo_match *
 		}
 	}
 
-	priv->last_gc = jiffies;
-}
-
-/**
- * pipapo_gc_queue() - Free expired elements after pointer swap
- * @_set:	nftables API set representation
- */
-static void pipapo_gc_queue(const struct nft_set *_set)
-{
-	struct nft_pipapo *priv = nft_set_priv(_set);
-	struct nft_trans_gc *gc, *next;
-
-	list_for_each_entry_safe(gc, next, &priv->gc_head, list) {
-		list_del(&gc->list);
+	gc = nft_trans_gc_catchall_sync(gc);
+	if (gc) {
 		nft_trans_gc_queue_sync_done(gc);
+		priv->last_gc = jiffies;
 	}
 }
 
@@ -1729,20 +1696,20 @@ static void pipapo_reclaim_match(struct rcu_head *rcu)
  * We also need to create a new working copy for subsequent insertions and
  * deletions.
  */
-static void nft_pipapo_commit(const struct nft_set *set)
+static void nft_pipapo_commit(struct nft_set *set)
 {
 	struct nft_pipapo *priv = nft_set_priv(set);
 	struct nft_pipapo_match *new_clone, *old;
 
 	if (time_after_eq(jiffies, priv->last_gc + nft_set_gc_interval(set)))
-		pipapo_gc_scan(set, priv->clone);
+		pipapo_gc(set, priv->clone);
 
 	if (!priv->dirty)
-		goto out;
+		return;
 
 	new_clone = pipapo_clone(priv->clone);
 	if (IS_ERR(new_clone))
-		goto out;
+		return;
 
 	priv->dirty = false;
 
@@ -1752,8 +1719,17 @@ static void nft_pipapo_commit(const struct nft_set *set)
 		call_rcu(&old->rcu, pipapo_reclaim_match);
 
 	priv->clone = new_clone;
-out:
-	pipapo_gc_queue(set);
+}
+
+static bool nft_pipapo_transaction_mutex_held(const struct nft_set *set)
+{
+#ifdef CONFIG_PROVE_LOCKING
+	const struct net *net = read_pnet(&set->net);
+
+	return lockdep_is_held(&nft_pernet(net)->commit_mutex);
+#else
+	return true;
+#endif
 }
 
 static void nft_pipapo_abort(const struct nft_set *set)
@@ -1764,7 +1740,7 @@ static void nft_pipapo_abort(const struct nft_set *set)
 	if (!priv->dirty)
 		return;
 
-	m = rcu_dereference(priv->match);
+	m = rcu_dereference_protected(priv->match, nft_pipapo_transaction_mutex_held(set));
 
 	new_clone = pipapo_clone(m);
 	if (IS_ERR(new_clone))
@@ -1793,7 +1769,7 @@ static void nft_pipapo_activate(const struct net *net,
 {
 	struct nft_pipapo_elem *e = elem->priv;
 
-	nft_set_elem_change_active(net, set, &e->ext);
+	nft_clear(net, &e->ext);
 }
 
 /**
@@ -2064,8 +2040,8 @@ static void nft_pipapo_walk(const struct nft_ctx *ctx, struct nft_set *set,
 			    struct nft_set_iter *iter)
 {
 	struct nft_pipapo *priv = nft_set_priv(set);
-	struct nft_pipapo_match *m;
-	struct nft_pipapo_field *f;
+	const struct nft_pipapo_match *m;
+	const struct nft_pipapo_field *f;
 	int i, r;
 
 	WARN_ON_ONCE(iter->type != NFT_ITER_READ &&
@@ -2094,9 +2070,6 @@ static void nft_pipapo_walk(const struct nft_ctx *ctx, struct nft_set *set,
 			goto cont;
 
 		e = f->mt[r].e;
-
-		if (!nft_set_elem_active(&e->ext, iter->genmask))
-			goto cont;
 
 		elem.priv = e;
 
@@ -2177,8 +2150,7 @@ static int nft_pipapo_init(const struct nft_set *set,
 	if (field_count > NFT_PIPAPO_MAX_FIELDS)
 		return -EINVAL;
 
-	m = kmalloc(sizeof(*priv->match) + sizeof(*f) * field_count,
-		    GFP_KERNEL);
+	m = kmalloc(struct_size(m, f, field_count), GFP_KERNEL);
 	if (!m)
 		return -ENOMEM;
 
@@ -2218,7 +2190,6 @@ static int nft_pipapo_init(const struct nft_set *set,
 
 	priv->dirty = false;
 
-	INIT_LIST_HEAD(&priv->gc_head);
 	rcu_assign_pointer(priv->match, m);
 
 	return 0;
@@ -2270,8 +2241,6 @@ static void nft_pipapo_destroy(const struct nft_ctx *ctx,
 	struct nft_pipapo *priv = nft_set_priv(set);
 	struct nft_pipapo_match *m;
 	int cpu;
-
-	WARN_ON_ONCE(!list_empty(&priv->gc_head));
 
 	m = rcu_dereference_protected(priv->match, true);
 	if (m) {

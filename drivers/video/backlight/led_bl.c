@@ -210,19 +210,6 @@ static int led_bl_probe(struct platform_device *pdev)
 	}
 
 	for (i = 0; i < priv->nb_leds; i++) {
-		struct device_link *link;
-
-		link = device_link_add(&pdev->dev, priv->leds[i]->dev->parent,
-				       DL_FLAG_AUTOREMOVE_CONSUMER);
-		if (!link) {
-			dev_err(&pdev->dev, "Failed to add devlink (consumer %s, supplier %s)\n",
-				dev_name(&pdev->dev), dev_name(priv->leds[i]->dev->parent));
-			backlight_device_unregister(priv->bl_dev);
-			return -EINVAL;
-		}
-	}
-
-	for (i = 0; i < priv->nb_leds; i++) {
 		mutex_lock(&priv->leds[i]->led_access);
 		led_sysfs_disable(priv->leds[i]);
 		mutex_unlock(&priv->leds[i]->led_access);
@@ -233,7 +220,7 @@ static int led_bl_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int led_bl_remove(struct platform_device *pdev)
+static void led_bl_remove(struct platform_device *pdev)
 {
 	struct led_bl_data *priv = platform_get_drvdata(pdev);
 	struct backlight_device *bl = priv->bl_dev;
@@ -247,8 +234,6 @@ static int led_bl_remove(struct platform_device *pdev)
 		led_sysfs_enable(priv->leds[i]);
 		mutex_unlock(&priv->leds[i]->led_access);
 	}
-
-	return 0;
 }
 
 static const struct of_device_id led_bl_of_match[] = {
@@ -261,10 +246,10 @@ MODULE_DEVICE_TABLE(of, led_bl_of_match);
 static struct platform_driver led_bl_driver = {
 	.driver		= {
 		.name		= "led-backlight",
-		.of_match_table	= of_match_ptr(led_bl_of_match),
+		.of_match_table	= led_bl_of_match,
 	},
 	.probe		= led_bl_probe,
-	.remove		= led_bl_remove,
+	.remove_new	= led_bl_remove,
 };
 
 module_platform_driver(led_bl_driver);

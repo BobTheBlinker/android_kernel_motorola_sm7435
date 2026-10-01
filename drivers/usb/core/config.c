@@ -165,14 +165,7 @@ static void usb_parse_ss_endpoint_companion(struct device *ddev, int cfgno,
 			(desc->bMaxBurst + 1);
 	else
 		max_tx = 999999;
-	/*
-	 * wBytesPerInterval > max_tx is bogus, but USB3 spec doesn't forbid the opposite.
-	 * Experience shows that wBytesPerInterval < wMaxPacketSize on common interrupt IN
-	 * endpoints is usually bogus too, and recent HCs enforce interrupt BW limits.
-	 */
-	if (le16_to_cpu(desc->wBytesPerInterval) > max_tx ||
-	    (le16_to_cpu(desc->wBytesPerInterval) < usb_endpoint_maxp(&ep->desc) &&
-	     usb_endpoint_is_int_in(&ep->desc))) {
+	if (le16_to_cpu(desc->wBytesPerInterval) > max_tx) {
 		dev_notice(ddev, "%s endpoint with wBytesPerInterval of %d in "
 				"config %d interface %d altsetting %d ep %d: "
 				"setting to %d\n",
@@ -1011,7 +1004,7 @@ int usb_get_bos_descriptor(struct usb_device *dev)
 	__u8 cap_type;
 	int ret;
 
-	bos = kzalloc(sizeof(struct usb_bos_descriptor), GFP_KERNEL);
+	bos = kzalloc(sizeof(*bos), GFP_KERNEL);
 	if (!bos)
 		return -ENOMEM;
 
@@ -1032,7 +1025,7 @@ int usb_get_bos_descriptor(struct usb_device *dev)
 	if (total_len < length)
 		return -EINVAL;
 
-	dev->bos = kzalloc(sizeof(struct usb_host_bos), GFP_KERNEL);
+	dev->bos = kzalloc(sizeof(*dev->bos), GFP_KERNEL);
 	if (!dev->bos)
 		return -ENOMEM;
 
@@ -1076,9 +1069,6 @@ int usb_get_bos_descriptor(struct usb_device *dev)
 		}
 
 		switch (cap_type) {
-		case USB_CAP_TYPE_WIRELESS_USB:
-			/* Wireless USB cap descriptor is handled by wusb */
-			break;
 		case USB_CAP_TYPE_EXT:
 			dev->bos->ext_cap =
 				(struct usb_ext_cap_descriptor *)buffer;
@@ -1101,6 +1091,7 @@ int usb_get_bos_descriptor(struct usb_device *dev)
 		case USB_PTM_CAP_TYPE:
 			dev->bos->ptm_cap =
 				(struct usb_ptm_cap_descriptor *)buffer;
+			break;
 		default:
 			break;
 		}

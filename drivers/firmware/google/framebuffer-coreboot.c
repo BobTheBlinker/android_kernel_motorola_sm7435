@@ -50,7 +50,7 @@ static int framebuffer_probe(struct coreboot_device *dev)
 		return -ENODEV;
 
 	memset(&res, 0, sizeof(res));
-	res.flags = IORESOURCE_MEM;
+	res.flags = IORESOURCE_MEM | IORESOURCE_BUSY;
 	res.name = "Coreboot Framebuffer";
 	res.start = fb->physical_address;
 	length = PAGE_ALIGN(fb->y_resolution * fb->bytes_per_line);
@@ -70,13 +70,11 @@ static int framebuffer_probe(struct coreboot_device *dev)
 	return PTR_ERR_OR_ZERO(pdev);
 }
 
-static int framebuffer_remove(struct coreboot_device *dev)
+static void framebuffer_remove(struct coreboot_device *dev)
 {
 	struct platform_device *pdev = dev_get_drvdata(&dev->dev);
 
 	platform_device_unregister(pdev);
-
-	return 0;
 }
 
 static struct coreboot_driver framebuffer_driver = {

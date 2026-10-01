@@ -16,8 +16,8 @@
 #include <linux/property.h>
 #include <linux/regmap.h>
 
-#include <linux/iio/common/inv_sensors_timestamp.h>
 #include <linux/iio/iio.h>
+#include <linux/iio/common/inv_sensors_timestamp.h>
 
 #include "inv_icm42600.h"
 #include "inv_icm42600_buffer.h"
@@ -42,7 +42,7 @@ const struct regmap_config inv_icm42600_regmap_config = {
 	.ranges = inv_icm42600_regmap_ranges,
 	.num_ranges = ARRAY_SIZE(inv_icm42600_regmap_ranges),
 };
-EXPORT_SYMBOL_GPL(inv_icm42600_regmap_config);
+EXPORT_SYMBOL_NS_GPL(inv_icm42600_regmap_config, IIO_ICM42600);
 
 /* define specific regmap for SPI not supporting burst write */
 const struct regmap_config inv_icm42600_spi_regmap_config = {
@@ -53,10 +53,10 @@ const struct regmap_config inv_icm42600_spi_regmap_config = {
 	.num_ranges = ARRAY_SIZE(inv_icm42600_regmap_ranges),
 	.use_single_write = true,
 };
-EXPORT_SYMBOL_GPL(inv_icm42600_spi_regmap_config);
+EXPORT_SYMBOL_NS_GPL(inv_icm42600_spi_regmap_config, IIO_ICM42600);
 
 struct inv_icm42600_hw {
-	uint8_t whoami;
+	u8 whoami;
 	const char *name;
 	const struct inv_icm42600_conf *conf;
 };
@@ -99,6 +99,11 @@ static const struct inv_icm42600_hw inv_icm42600_hw[INV_CHIP_NB] = {
 		.name = "icm42622",
 		.conf = &inv_icm42600_default_conf,
 	},
+	[INV_CHIP_ICM42631] = {
+		.whoami = INV_ICM42600_WHOAMI_ICM42631,
+		.name = "icm42631",
+		.conf = &inv_icm42600_default_conf,
+	},
 };
 
 const struct iio_mount_matrix *
@@ -110,9 +115,9 @@ inv_icm42600_get_mount_matrix(const struct iio_dev *indio_dev,
 	return &st->orientation;
 }
 
-uint32_t inv_icm42600_odr_to_period(enum inv_icm42600_odr odr)
+u32 inv_icm42600_odr_to_period(enum inv_icm42600_odr odr)
 {
-	static uint32_t odr_periods[INV_ICM42600_ODR_NB] = {
+	static u32 odr_periods[INV_ICM42600_ODR_NB] = {
 		/* reserved values */
 		0, 0, 0,
 		/* 8kHz */
@@ -518,7 +523,6 @@ static int inv_icm42600_irq_init(struct inv_icm42600_state *st, int irq,
 	if (ret)
 		return ret;
 
-	irq_type |= IRQF_ONESHOT;
 	return devm_request_threaded_irq(dev, irq, inv_icm42600_irq_timestamp,
 					 inv_icm42600_irq_handler, irq_type,
 					 "inv_icm42600", st);
@@ -608,7 +612,7 @@ int inv_icm42600_core_probe(struct regmap *regmap, int chip, int irq,
 	st->chip = chip;
 	st->map = regmap;
 
-	ret = iio_read_mount_matrix(dev, "mount-matrix", &st->orientation);
+	ret = iio_read_mount_matrix(dev, &st->orientation);
 	if (ret) {
 		dev_err(dev, "failed to retrieve mounting matrix %d\n", ret);
 		return ret;
@@ -674,13 +678,13 @@ int inv_icm42600_core_probe(struct regmap *regmap, int chip, int irq,
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(inv_icm42600_core_probe);
+EXPORT_SYMBOL_NS_GPL(inv_icm42600_core_probe, IIO_ICM42600);
 
 /*
  * Suspend saves sensors state and turns everything off.
  * Check first if runtime suspend has not already done the job.
  */
-static int __maybe_unused inv_icm42600_suspend(struct device *dev)
+static int inv_icm42600_suspend(struct device *dev)
 {
 	struct inv_icm42600_state *st = dev_get_drvdata(dev);
 	int ret = 0;
@@ -718,7 +722,7 @@ out_unlock:
  * System resume gets the system back on and restores the sensors state.
  * Manually put runtime power management in system active state.
  */
-static int __maybe_unused inv_icm42600_resume(struct device *dev)
+static int inv_icm42600_resume(struct device *dev)
 {
 	struct inv_icm42600_state *st = dev_get_drvdata(dev);
 	struct inv_sensors_timestamp *gyro_ts = iio_priv(st->indio_gyro);
@@ -755,7 +759,7 @@ out_unlock:
 }
 
 /* Runtime suspend will turn off sensors that are enabled by iio devices. */
-static int __maybe_unused inv_icm42600_runtime_suspend(struct device *dev)
+static int inv_icm42600_runtime_suspend(struct device *dev)
 {
 	struct inv_icm42600_state *st = dev_get_drvdata(dev);
 	int ret;
@@ -777,7 +781,7 @@ error_unlock:
 }
 
 /* Sensors are enabled by iio devices, no need to turn them back on here. */
-static int __maybe_unused inv_icm42600_runtime_resume(struct device *dev)
+static int inv_icm42600_runtime_resume(struct device *dev)
 {
 	struct inv_icm42600_state *st = dev_get_drvdata(dev);
 	int ret;
@@ -790,12 +794,11 @@ static int __maybe_unused inv_icm42600_runtime_resume(struct device *dev)
 	return ret;
 }
 
-const struct dev_pm_ops inv_icm42600_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(inv_icm42600_suspend, inv_icm42600_resume)
-	SET_RUNTIME_PM_OPS(inv_icm42600_runtime_suspend,
-			   inv_icm42600_runtime_resume, NULL)
+EXPORT_NS_GPL_DEV_PM_OPS(inv_icm42600_pm_ops, IIO_ICM42600) = {
+	SYSTEM_SLEEP_PM_OPS(inv_icm42600_suspend, inv_icm42600_resume)
+	RUNTIME_PM_OPS(inv_icm42600_runtime_suspend,
+		       inv_icm42600_runtime_resume, NULL)
 };
-EXPORT_SYMBOL_GPL(inv_icm42600_pm_ops);
 
 MODULE_AUTHOR("InvenSense, Inc.");
 MODULE_DESCRIPTION("InvenSense ICM-426xx device driver");

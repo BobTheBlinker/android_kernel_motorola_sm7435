@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2016-2020, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2023-2024, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt)	"LCDB: %s: " fmt, __func__
@@ -18,7 +18,6 @@
 #include <linux/regulator/driver.h>
 #include <linux/regulator/of_regulator.h>
 #include <linux/regulator/machine.h>
-#include <linux/qpnp/qpnp-revid.h>
 
 #define QPNP_LCDB_REGULATOR_DRIVER_NAME		"qcom,qpnp-lcdb-regulator"
 #define QPNP_LCDB_REGULATOR_DRIVER_660		"qcom,lcdb-pm660"
@@ -285,6 +284,7 @@ struct qpnp_lcdb {
 	u32				base;
 	u32				wa_flags;
 	int				sc_irq;
+	int				pwrdn_delay_ms;
 	int				pwrup_delay_ms;
 	int				min_voltage_mv;
 	int				max_voltage_mv;
@@ -292,8 +292,6 @@ struct qpnp_lcdb {
 	int				high_p2_blk_ns;
 	int				low_p2_blk_ns;
 	int				mpc_current_thr_ma;
-	int				pwrdn_delay_ms;
-
 	bool			ncp_symmetry;
 
 	/* TTW params */
@@ -1658,7 +1656,7 @@ static int qpnp_lcdb_ldo_regulator_get_voltage(struct regulator_dev *rdev)
 	return voltage_mv * 1000;
 }
 
-static struct regulator_ops qpnp_lcdb_ldo_ops = {
+static const struct regulator_ops qpnp_lcdb_ldo_ops = {
 	.enable			= qpnp_lcdb_ldo_regulator_enable,
 	.disable		= qpnp_lcdb_ldo_regulator_disable,
 	.is_enabled		= qpnp_lcdb_ldo_regulator_is_enabled,
@@ -1737,7 +1735,7 @@ static int qpnp_lcdb_ncp_regulator_get_voltage(struct regulator_dev *rdev)
 	return voltage_mv * 1000;
 }
 
-static struct regulator_ops qpnp_lcdb_ncp_ops = {
+static const struct regulator_ops qpnp_lcdb_ncp_ops = {
 	.enable			= qpnp_lcdb_ncp_regulator_enable,
 	.disable		= qpnp_lcdb_ncp_regulator_disable,
 	.is_enabled		= qpnp_lcdb_ncp_regulator_is_enabled,
@@ -2440,16 +2438,6 @@ static int qpnp_lcdb_hw_init(struct qpnp_lcdb *lcdb)
 			return rc;
 	}
 
-
-	if (lcdb->ncp_symmetry) {
-		rc = qpnp_lcdb_masked_write(lcdb, lcdb->base +
-					    LCDB_NCP_OUTPUT_VOLTAGE_REG,
-					    EN_NCP_VOUT_SYMMETRY_BIT,
-					    EN_NCP_VOUT_SYMMETRY_BIT);
-		if (rc < 0)
-			return rc;
-	}
-
 	if (lcdb->pwrup_delay_ms != -EINVAL) {
 		rc = qpnp_lcdb_masked_write(lcdb, lcdb->base +
 					    LCDB_PWRUP_PWRDN_CTL_REG,
@@ -2491,6 +2479,15 @@ static int qpnp_lcdb_hw_init(struct qpnp_lcdb *lcdb)
 					    PM7325B_LCDB_MPC_CTL_REG,
 					    MPC_NCP_SD_SEL_MASK,
 					    lcdb->mpc_current_thr_ma);
+		if (rc < 0)
+			return rc;
+	}
+
+	if (lcdb->ncp_symmetry) {
+		rc = qpnp_lcdb_masked_write(lcdb, lcdb->base +
+					    LCDB_NCP_OUTPUT_VOLTAGE_REG,
+					    EN_NCP_VOUT_SYMMETRY_BIT,
+					    EN_NCP_VOUT_SYMMETRY_BIT);
 		if (rc < 0)
 			return rc;
 	}
@@ -2810,4 +2807,4 @@ static void __exit qpnp_lcdb_regulator_exit(void)
 module_exit(qpnp_lcdb_regulator_exit);
 
 MODULE_DESCRIPTION("QPNP LCDB regulator driver");
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");

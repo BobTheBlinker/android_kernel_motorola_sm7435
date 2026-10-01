@@ -9,13 +9,13 @@
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <net/genetlink.h>
+#include <net/gro.h>
 #include <net/gue.h>
 #include <net/fou.h>
 #include <net/ip.h>
 #include <net/protocol.h>
 #include <net/udp.h>
 #include <net/udp_tunnel.h>
-#include <net/xfrm.h>
 #include <uapi/linux/fou.h>
 #include <uapi/linux/genetlink.h>
 
@@ -215,9 +215,6 @@ static int gue_udp_recv(struct sock *sk, struct sk_buff *skb)
 		return gue_control_message(skb, guehdr);
 
 	proto_ctype = guehdr->proto_ctype;
-	if (unlikely(!proto_ctype))
-		goto drop;
-
 	__skb_pull(skb, sizeof(struct udphdr) + hdrlen);
 	skb_reset_transport_header(skb);
 
@@ -347,12 +344,9 @@ static struct sk_buff *gue_gro_receive(struct sock *sk,
 	off = skb_gro_offset(skb);
 	len = off + sizeof(*guehdr);
 
-	guehdr = skb_gro_header_fast(skb, off);
-	if (skb_gro_header_hard(skb, len)) {
-		guehdr = skb_gro_header_slow(skb, len, off);
-		if (unlikely(!guehdr))
-			goto out;
-	}
+	guehdr = skb_gro_header(skb, len, off);
+	if (unlikely(!guehdr))
+		goto out;
 
 	switch (guehdr->version) {
 	case 0:
@@ -920,6 +914,7 @@ static struct genl_family fou_nl_family __ro_after_init = {
 	.module		= THIS_MODULE,
 	.small_ops	= fou_nl_ops,
 	.n_small_ops	= ARRAY_SIZE(fou_nl_ops),
+	.resv_start_op	= FOU_CMD_GET + 1,
 };
 
 size_t fou_encap_hlen(struct ip_tunnel_encap *e)
@@ -1260,10 +1255,15 @@ static int __init fou_init(void)
 	if (ret < 0)
 		goto unregister;
 
+	ret = register_fou_bpf();
+	if (ret < 0)
+		goto kfunc_failed;
+
 	ret = ip_tunnel_encap_add_fou_ops();
 	if (ret == 0)
 		return 0;
 
+kfunc_failed:
 	genl_unregister_family(&fou_nl_family);
 unregister:
 	unregister_pernet_device(&fou_net_ops);

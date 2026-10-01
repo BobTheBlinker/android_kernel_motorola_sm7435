@@ -18,7 +18,7 @@
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
@@ -141,7 +141,6 @@ struct jz4780_i2c {
 	void __iomem		*iomem;
 	int			 irq;
 	struct clk		*clk;
-	unsigned long		 clk_rate_khz;
 	struct i2c_adapter	 adap;
 	const struct ingenic_i2c_config *cdata;
 
@@ -247,7 +246,7 @@ static int jz4780_i2c_set_target(struct jz4780_i2c *i2c, unsigned char address)
 
 static int jz4780_i2c_set_speed(struct jz4780_i2c *i2c)
 {
-	int dev_clk_khz = i2c->clk_rate_khz;
+	int dev_clk_khz = clk_get_rate(i2c->clk) / 1000;
 	int cnt_high = 0;	/* HIGH period count of the SCL clock */
 	int cnt_low = 0;	/* LOW period count of the SCL clock */
 	int cnt_period = 0;	/* period count of the SCL clock */
@@ -438,9 +437,8 @@ static irqreturn_t jz4780_i2c_irq(int irqno, void *dev_id)
 	unsigned short intst;
 	unsigned short intmsk;
 	struct jz4780_i2c *i2c = dev_id;
-	unsigned long flags;
 
-	spin_lock_irqsave(&i2c->lock, flags);
+	spin_lock(&i2c->lock);
 	intmsk = jz4780_i2c_readw(i2c, JZ4780_I2C_INTM);
 	intst = jz4780_i2c_readw(i2c, JZ4780_I2C_INTST);
 
@@ -552,7 +550,7 @@ static irqreturn_t jz4780_i2c_irq(int irqno, void *dev_id)
 	}
 
 done:
-	spin_unlock_irqrestore(&i2c->lock, flags);
+	spin_unlock(&i2c->lock);
 	return IRQ_HANDLED;
 }
 
@@ -802,8 +800,6 @@ static int jz4780_i2c_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	i2c->clk_rate_khz = clk_get_rate(i2c->clk) / 1000;
-
 	ret = of_property_read_u32(pdev->dev.of_node, "clock-frequency",
 				   &clk_freq);
 	if (ret) {
@@ -849,18 +845,17 @@ err:
 	return ret;
 }
 
-static int jz4780_i2c_remove(struct platform_device *pdev)
+static void jz4780_i2c_remove(struct platform_device *pdev)
 {
 	struct jz4780_i2c *i2c = platform_get_drvdata(pdev);
 
 	clk_disable_unprepare(i2c->clk);
 	i2c_del_adapter(&i2c->adap);
-	return 0;
 }
 
 static struct platform_driver jz4780_i2c_driver = {
 	.probe		= jz4780_i2c_probe,
-	.remove		= jz4780_i2c_remove,
+	.remove_new	= jz4780_i2c_remove,
 	.driver		= {
 		.name	= "jz4780-i2c",
 		.of_match_table = jz4780_i2c_of_matches,

@@ -2,6 +2,7 @@
 /*
  * Copyright (c) 2012-2015, 2017-2019, 2021 The Linux Foundation.
  * All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #ifndef QPNP_PON_H
@@ -55,6 +56,10 @@ enum pon_restart_reason {
 	PON_RESTART_REASON_DMVERITY_CORRUPTED	= 0x04,
 	PON_RESTART_REASON_DMVERITY_ENFORCE	= 0x05,
 	PON_RESTART_REASON_KEYS_CLEAR		= 0x06,
+	PON_RESTART_REASON_SILENT				= 0x0a,
+	PON_RESTART_REASON_NON_SILENT			= 0x0b,
+	PON_RESTART_REASON_FORCED_SILENT		= 0x0c,
+	PON_RESTART_REASON_FORCED_NON_SILENT	= 0x0d,
 };
 
 #if IS_ENABLED(CONFIG_INPUT_QPNP_POWER_ON)

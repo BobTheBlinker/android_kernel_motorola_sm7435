@@ -250,7 +250,7 @@ static int synquacer_spi_config(struct spi_master *master,
 	}
 
 	mode = spi->mode;
-	cs = spi->chip_select;
+	cs = spi_get_chipselect(spi, 0);
 	speed = xfer->speed_hz;
 	bpw = xfer->bits_per_word;
 
@@ -344,7 +344,7 @@ static int synquacer_spi_config(struct spi_master *master,
 	sspi->bpw = bpw;
 	sspi->mode = mode;
 	sspi->speed = speed;
-	sspi->cs = spi->chip_select;
+	sspi->cs = spi_get_chipselect(spi, 0);
 	sspi->bus_width = bus_width;
 
 	return 0;
@@ -488,7 +488,7 @@ static void synquacer_spi_set_cs(struct spi_device *spi, bool enable)
 	val = readl(sspi->regs + SYNQUACER_HSSPI_REG_DMSTART);
 	val &= ~(SYNQUACER_HSSPI_DMPSEL_CS_MASK <<
 		 SYNQUACER_HSSPI_DMPSEL_CS_SHIFT);
-	val |= spi->chip_select << SYNQUACER_HSSPI_DMPSEL_CS_SHIFT;
+	val |= spi_get_chipselect(spi, 0) << SYNQUACER_HSSPI_DMPSEL_CS_SHIFT;
 
 	if (!enable)
 		val |= SYNQUACER_HSSPI_DMSTOP_STOP;
@@ -719,7 +719,7 @@ static int synquacer_spi_probe(struct platform_device *pdev)
 	pm_runtime_set_active(sspi->dev);
 	pm_runtime_enable(sspi->dev);
 
-	ret = spi_register_master(master);
+	ret = devm_spi_register_master(sspi->dev, master);
 	if (ret)
 		goto disable_pm;
 
@@ -735,22 +735,14 @@ put_spi:
 	return ret;
 }
 
-static int synquacer_spi_remove(struct platform_device *pdev)
+static void synquacer_spi_remove(struct platform_device *pdev)
 {
 	struct spi_master *master = platform_get_drvdata(pdev);
 	struct synquacer_spi *sspi = spi_master_get_devdata(master);
 
-	spi_master_get(master);
-
-	spi_unregister_master(master);
-
 	pm_runtime_disable(sspi->dev);
 
 	clk_disable_unprepare(sspi->clk);
-
-	spi_master_put(master);
-
-	return 0;
 }
 
 static int __maybe_unused synquacer_spi_suspend(struct device *dev)
@@ -826,7 +818,7 @@ static struct platform_driver synquacer_spi_driver = {
 		.acpi_match_table = ACPI_PTR(synquacer_hsspi_acpi_ids),
 	},
 	.probe = synquacer_spi_probe,
-	.remove = synquacer_spi_remove,
+	.remove_new = synquacer_spi_remove,
 };
 module_platform_driver(synquacer_spi_driver);
 

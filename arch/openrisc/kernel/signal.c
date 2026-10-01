@@ -21,14 +21,12 @@
 #include <linux/ptrace.h>
 #include <linux/unistd.h>
 #include <linux/stddef.h>
-#include <linux/tracehook.h>
+#include <linux/resume_user_mode.h>
 
 #include <asm/processor.h>
 #include <asm/syscall.h>
 #include <asm/ucontext.h>
 #include <linux/uaccess.h>
-
-#define DEBUG_SIG 0
 
 struct rt_sigframe {
 	struct siginfo info;
@@ -36,10 +34,14 @@ struct rt_sigframe {
 	unsigned char retcode[16];	/* trampoline code */
 };
 
+asmlinkage long _sys_rt_sigreturn(struct pt_regs *regs);
+
+asmlinkage int do_work_pending(struct pt_regs *regs, unsigned int thread_flags,
+			       int syscall);
+
 static int restore_sigcontext(struct pt_regs *regs,
 			      struct sigcontext __user *sc)
 {
-	unsigned long old_sr = regs->sr;
 	int err = 0;
 
 	/* Always make any pending restarted system calls return -EINTR */
@@ -53,9 +55,10 @@ static int restore_sigcontext(struct pt_regs *regs,
 	err |= __copy_from_user(regs, sc->regs.gpr, 32 * sizeof(unsigned long));
 	err |= __copy_from_user(&regs->pc, &sc->regs.pc, sizeof(unsigned long));
 	err |= __copy_from_user(&regs->sr, &sc->regs.sr, sizeof(unsigned long));
+	err |= __copy_from_user(&regs->fpcsr, &sc->fpcsr, sizeof(unsigned long));
 
-	/* keep the privileged SR bits kernel owned, restore only user flags */
-	regs->sr = (old_sr & ~SPR_SR_USER_MASK) | (regs->sr & SPR_SR_USER_MASK);
+	/* make sure the SM-bit is cleared so user-mode cannot fool us */
+	regs->sr &= ~SPR_SR_SM;
 
 	regs->orig_gpr11 = -1;	/* Avoid syscall restart checks */
 
@@ -115,6 +118,7 @@ static int setup_sigcontext(struct pt_regs *regs, struct sigcontext __user *sc)
 	err |= __copy_to_user(sc->regs.gpr, regs, 32 * sizeof(unsigned long));
 	err |= __copy_to_user(&sc->regs.pc, &regs->pc, sizeof(unsigned long));
 	err |= __copy_to_user(&sc->regs.sr, &regs->sr, sizeof(unsigned long));
+	err |= __copy_to_user(&sc->fpcsr, &regs->fpcsr, sizeof(unsigned long));
 
 	return err;
 }
@@ -225,7 +229,7 @@ handle_signal(struct ksignal *ksig, struct pt_regs *regs)
  * mode below.
  */
 
-int do_signal(struct pt_regs *regs, int syscall)
+static int do_signal(struct pt_regs *regs, int syscall)
 {
 	struct ksignal ksig;
 	unsigned long continue_addr = 0;
@@ -312,11 +316,11 @@ do_work_pending(struct pt_regs *regs, unsigned int thread_flags, int syscall)
 				}
 				syscall = 0;
 			} else {
-				tracehook_notify_resume(regs);
+				resume_user_mode_work(regs);
 			}
 		}
 		local_irq_disable();
-		thread_flags = current_thread_info()->flags;
+		thread_flags = read_thread_flags();
 	} while (thread_flags & _TIF_WORK_MASK);
 	return 0;
 }

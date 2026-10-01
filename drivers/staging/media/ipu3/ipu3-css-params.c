@@ -771,7 +771,6 @@ static int imgu_css_osys_calc_frame_and_stripe_params(
 		 */
 		{
 			unsigned int i;
-			int pin_scale = 0;
 			/*Input resolution */
 
 			stripe_params[s].input_width = stripe_input_width_y;
@@ -791,8 +790,6 @@ static int imgu_css_osys_calc_frame_and_stripe_params(
 						reso.pin_height[i];
 					stripe_params[s].output_offset[i] =
 						stripe_offset_out_y;
-
-					pin_scale += frame_params[i].scaled;
 				} else {
 					/* Unscaled pin */
 					stripe_params[s].output_width[i] =
@@ -1773,8 +1770,6 @@ static int imgu_css_cfg_acc_stripe(struct imgu_css *css, unsigned int pipe,
 		acc->stripe.bds_out_stripes[0].width =
 			ALIGN(css_pipe->rect[IPU3_CSS_RECT_BDS].width, f);
 	} else {
-		u32 offset;
-
 		/* Image processing is divided into two stripes */
 		acc->stripe.bds_out_stripes[0].width =
 			acc->stripe.bds_out_stripes[1].width =
@@ -1793,10 +1788,8 @@ static int imgu_css_cfg_acc_stripe(struct imgu_css *css, unsigned int pipe,
 			acc->stripe.bds_out_stripes[1].width += f;
 		}
 		/* Overlap between stripes is IPU3_UAPI_ISP_VEC_ELEMS * 4 */
-		offset = acc->stripe.bds_out_stripes[0].width - 2 * f;
-		if (offset > 65535)
-			return -EINVAL;
-		acc->stripe.bds_out_stripes[1].offset = offset;
+		acc->stripe.bds_out_stripes[1].offset =
+			acc->stripe.bds_out_stripes[0].width - 2 * f;
 	}
 
 	acc->stripe.effective_stripes[0].height =
@@ -2563,6 +2556,15 @@ int imgu_css_cfg_acc(struct imgu_css *css, unsigned int pipe,
 		/* Enable only for rightmost stripe, disable left */
 		acc->af.stripes[0].grid_cfg.y_start &=
 			~IPU3_UAPI_GRID_Y_START_EN;
+		acc->af.stripes[1].grid_cfg.x_start =
+			(acc->af.stripes[1].grid_cfg.x_start -
+			 acc->stripe.down_scaled_stripes[1].offset) &
+			IPU3_UAPI_GRID_START_MASK;
+		b_w_log2 = acc->af.stripes[1].grid_cfg.block_width_log2;
+		acc->af.stripes[1].grid_cfg.x_end =
+			imgu_css_grid_end(acc->af.stripes[1].grid_cfg.x_start,
+					  acc->af.stripes[1].grid_cfg.width,
+					  b_w_log2);
 	} else if (acc->af.config.grid_cfg.x_end <=
 		   acc->stripe.bds_out_stripes[0].width - min_overlap) {
 		/* Enable only for leftmost stripe, disable right */
@@ -2634,6 +2636,17 @@ int imgu_css_cfg_acc(struct imgu_css *css, unsigned int pipe,
 	    acc->stripe.down_scaled_stripes[1].offset + min_overlap) {
 		/* Enable only for rightmost stripe, disable left */
 		acc->awb.stripes[0].rgbs_thr_b &= ~IPU3_UAPI_AWB_RGBS_THR_B_EN;
+
+		acc->awb.stripes[1].grid.x_start =
+			(acc->awb.stripes[1].grid.x_start -
+			 acc->stripe.down_scaled_stripes[1].offset) &
+			IPU3_UAPI_GRID_START_MASK;
+
+		b_w_log2 = acc->awb.stripes[1].grid.block_width_log2;
+		acc->awb.stripes[1].grid.x_end =
+			imgu_css_grid_end(acc->awb.stripes[1].grid.x_start,
+					  acc->awb.stripes[1].grid.width,
+					  b_w_log2);
 	} else if (acc->awb.config.grid.x_end <=
 		   acc->stripe.bds_out_stripes[0].width - min_overlap) {
 		/* Enable only for leftmost stripe, disable right */

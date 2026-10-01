@@ -117,36 +117,28 @@ void vma_set_pad_pages(struct vm_area_struct *vma,
 	if (!is_pgsize_migration_enabled())
 		return;
 
-	vma->vm_flags &= ~VM_PAD_MASK;
-	vma->vm_flags |= (nr_pages << VM_PAD_SHIFT);
+	/*
+	 * Usually to modify vm_flags we need to take exclusive mmap_lock but here
+	 * only have the lock in read mode, to avoid all DONTNEED/DONTNEED_LOCKED
+	 * calls needing the write lock.
+	 *
+	 * A race to the flags update can only happen with another MADV_DONTNEED on
+	 * the same process and same range (VMA).
+	 *
+	 * In practice, this specific scenario is not possible because the action that
+	 * could cause it is usually performed at most once per VMA and only by the
+	 * dynamic linker.
+	 *
+	 * Forego protection for this case, to avoid penalties in the common cases.
+	 */
+	__vm_flags_mod(vma, 0, VM_PAD_MASK);
+	__vm_flags_mod(vma, nr_pages << VM_PAD_SHIFT, 0);
 }
 
-/**
- * __vma_pad_pages - Get the number of padding pages for a VMA.
- * @vma: The VMA to check.
- * @new: The new VMA if this is called during a split.
- *
- * This is an internal helper only meant to be used by split_pad_vma() to
- * handle the case where the VMA bounds have already been updated. Other
- * callers should use vma_pad_pages().
- *
- * During a VMA split, the original VMA's bounds (vm_start/vm_end) are updated
- * before its padding flags are adjusted. This means that at the time of the
- * split, vma_pages(vma) might be smaller than the number of padding pages
- * stored in its flags.
- *
- * If @new is provided, it is assumed to be the other half of the split VMA,
- * and its page count is added to @vma's to reconstruct the original total
- * page count for the padding check.
- *
- * Returns: The number of padding pages, or 0 if padding is disabled or
- * the VMA is inconsistent.
- */
-static unsigned long __vma_pad_pages(struct vm_area_struct *vma,
-				     struct vm_area_struct *new)
+unsigned long vma_pad_pages(struct vm_area_struct *vma)
 {
-	unsigned long nr_pages;
-	unsigned long nr_pad;
+	int nr_pages;
+	int nr_pad;
 
 	if (!is_pgsize_migration_enabled())
 		return 0;
@@ -156,24 +148,12 @@ static unsigned long __vma_pad_pages(struct vm_area_struct *vma,
 		return 0;
 
 	nr_pages = vma_pages(vma);
-	if (new)
-		nr_pages += vma_pages(new);
 
-	/*
-	 * The number of padding pages should not exceed the total number of pages in
-	 * the VMA, but can be equal.
-	 *
-	 * See comment in split_pad_vma() for more details.
-	 */
-	if (WARN_ON(nr_pad > nr_pages))
+	/* There must be at least 1 data page in the VMA */
+	if (WARN_ON(nr_pad >= nr_pages))
 		return 0;
 
 	return nr_pad;
-}
-
-unsigned long vma_pad_pages(struct vm_area_struct *vma)
-{
-	return __vma_pad_pages(vma, NULL);
 }
 
 static __always_inline bool str_has_suffix(const char *str, const char *suffix)
@@ -187,6 +167,7 @@ static __always_inline bool str_has_suffix(const char *str, const char *suffix)
 	return !strncmp(str + str_len - suffix_len, suffix, suffix_len);
 }
 
+#ifdef CONFIG_PER_VMA_LOCK
 /*
  * The dynamic linker, or interpreter, operates within the process context
  * of the binary that necessitated dynamic linking.
@@ -200,8 +181,6 @@ static __always_inline bool str_has_suffix(const char *str, const char *suffix)
  * VMAs of the current task.
  *
  * Returns true if in linker context, otherwise false.
- *
- * Caller must hold mmap lock in read mode.
  */
 static inline bool linker_ctx(void)
 {
@@ -213,14 +192,37 @@ static inline bool linker_ctx(void)
 	if (!regs)
 		return false;
 
-	vma = find_vma(mm, instruction_pointer(regs));
+	vma = lock_vma_under_rcu(mm, instruction_pointer(regs));
 
-	/* Current execution context, the VMA must be present */
-	BUG_ON(!vma);
+	/*
+	 * lock_vma_under_rcu() is a try-lock that can fail if the
+	 * VMA is already locked for modification.
+	 *
+	 * Fallback to finding the vma under mmap read lock.
+	 */
+	if (!vma) {
+		mmap_read_lock(mm);
+
+		vma = find_vma(mm, instruction_pointer(regs));
+
+		/* Current execution context, the VMA must be present */
+		BUG_ON(!vma);
+
+		/*
+		 * We cannot use vma_start_read() as it may fail due to
+		 * false locked (see comment in vma_start_read()). We
+		 * can avoid that by directly locking vm_lock under
+		 * mmap_lock, which guarantees that nobody can lock the
+		 * vma for write (vma_start_write()) under us.
+		 */
+		down_read(&vma->vm_lock->lock);
+
+		mmap_read_unlock(mm);
+	}
 
 	file = vma->vm_file;
 	if (!file)
-		return false;
+		goto out;
 
 	if ((vma->vm_flags & VM_EXEC)) {
 		char buf[64];
@@ -232,7 +234,7 @@ static inline bool linker_ctx(void)
 
 		if (IS_ERR(path)) {
 			pgmigration_err("Unable to parse filepath");
-			return false;
+			goto out;
 		}
 
 		/*
@@ -246,13 +248,21 @@ static inline bool linker_ctx(void)
 		 */
 		if (!strcmp(path, "/system/bin/bootstrap/linker64") ||
 		    !strcmp(path, "/system/bin/linker64") ||
-		    !strcmp(path, "/apex/com.android.runtime/bin/linker64"))
+		    !strcmp(path, "/apex/com.android.runtime/bin/linker64")) {
+			vma_end_read(vma);
 			return true;
+		}
 	}
-
+out:
+	vma_end_read(vma);
 	return false;
 }
 
+#else /* CONFIG_PER_VMA_LOCK */
+
+static inline bool linker_ctx(void) { return false; }
+
+#endif /* CONFIG_PER_VMA_LOCK */
 /*
  * Saves the number of padding pages for an ELF segment mapping
  * in vm_flags.
@@ -335,11 +345,14 @@ static void init_pad_vma(struct vm_area_struct *vma, struct vm_area_struct *pad)
 	/* Adjust the start to begin at the start of the padding section */
 	pad->vm_start = VMA_PAD_START(pad);
 
+	/*
+	 * The below modifications to vm_flags don't need mmap write lock,
+	 * since, pad does not belong to the VMA tree.
+	 */
 	/* Make the pad vma PROT_NONE */
-	pad->vm_flags &= ~(VM_READ|VM_WRITE|VM_EXEC);
-
+	__vm_flags_mod(pad, 0, VM_READ|VM_WRITE|VM_EXEC);
 	/* Remove padding bits */
-	pad->vm_flags &= ~VM_PAD_MASK;
+	__vm_flags_mod(pad, 0, VM_PAD_MASK);
 }
 
 /*
@@ -348,10 +361,10 @@ static void init_pad_vma(struct vm_area_struct *vma, struct vm_area_struct *pad)
 void show_map_pad_vma(struct vm_area_struct *vma, struct seq_file *m,
 		      void *func, bool smaps)
 {
-	struct vm_area_struct pad;
-
 	if (!is_pgsize_migration_enabled() || !(vma->vm_flags & VM_PAD_MASK))
 		return;
+
+	struct vm_area_struct pad;
 
 	init_pad_vma(vma, &pad);
 
@@ -407,7 +420,7 @@ void show_map_pad_vma(struct vm_area_struct *vma, struct seq_file *m,
 void split_pad_vma(struct vm_area_struct *vma, struct vm_area_struct *new,
 		   unsigned long addr, int new_below)
 {
-	unsigned long nr_pad_pages = __vma_pad_pages(vma, new);
+	unsigned long nr_pad_pages = vma_pad_pages(vma);
 	unsigned long nr_vma2_pages;
 	struct vm_area_struct *first;
 	struct vm_area_struct *second;

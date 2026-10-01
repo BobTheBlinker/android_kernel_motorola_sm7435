@@ -4,7 +4,8 @@
 #include <linux/utsname.h>
 #include <linux/freezer.h>
 #include <linux/compiler.h>
-#include <linux/crypto.h>
+#include <linux/cpu.h>
+#include <linux/cpuidle.h>
 
 struct swsusp_info {
 	struct new_utsname	uts;
@@ -16,6 +17,10 @@ struct swsusp_info {
 	unsigned long		size;
 } __aligned(PAGE_SIZE);
 
+#if defined(CONFIG_SUSPEND) || defined(CONFIG_HIBERNATION)
+extern int pm_sleep_fs_sync(void);
+#endif
+
 #ifdef CONFIG_HIBERNATION
 /* kernel/power/snapshot.c */
 extern void __init hibernate_reserved_size_init(void);
@@ -24,9 +29,6 @@ extern void __init hibernate_image_size_init(void);
 #ifdef CONFIG_ARCH_HIBERNATION_HEADER
 /* Maximum size of architecture specific data in a hibernation header */
 #define MAX_ARCH_HEADER_SIZE	(sizeof(struct new_utsname) + 4)
-
-extern int arch_hibernation_header_save(void *addr, unsigned int max_size);
-extern int arch_hibernation_header_restore(void *addr);
 
 static inline int init_header_complete(struct swsusp_info *info)
 {
@@ -39,8 +41,6 @@ static inline const char *check_image_kernel(struct swsusp_info *info)
 			"architecture specific data" : NULL;
 }
 #endif /* CONFIG_ARCH_HIBERNATION_HEADER */
-
-extern int hibernate_resume_nonboot_cpu_disable(void);
 
 /*
  * Keep some memory free so that I/O operations can succeed without paging
@@ -58,10 +58,6 @@ asmlinkage int swsusp_save(void);
 
 /* kernel/power/hibernate.c */
 extern bool freezer_test_done;
-extern char hib_comp_algo[CRYPTO_MAX_ALG_NAME];
-
-/* kernel/power/swap.c */
-extern unsigned int swsusp_header_flags;
 
 extern int hibernation_snapshot(int platform_mode);
 extern int hibernation_restore(int platform_mode);
@@ -74,10 +70,14 @@ extern void enable_restore_image_protection(void);
 static inline void enable_restore_image_protection(void) {}
 #endif /* CONFIG_STRICT_KERNEL_RWX */
 
+extern bool hibernation_in_progress(void);
+
 #else /* !CONFIG_HIBERNATION */
 
 static inline void hibernate_reserved_size_init(void) {}
 static inline void hibernate_image_size_init(void) {}
+
+static inline bool hibernation_in_progress(void) { return false; }
 #endif /* !CONFIG_HIBERNATION */
 
 #define power_attr(_name) \
@@ -170,30 +170,17 @@ extern int swsusp_swap_in_use(void);
  * Flags that can be passed from the hibernatig hernel to the "boot" kernel in
  * the image header.
  */
-#define SF_COMPRESSION_ALG_LZO	0 /* dummy, details given  below */
 #define SF_PLATFORM_MODE	1
 #define SF_NOCOMPRESS_MODE	2
 #define SF_CRC32_MODE	        4
-
-/*
- * Bit to indicate the compression algorithm to be used(for LZ4). The same
- * could be checked while saving/loading image to/from disk to use the
- * corresponding algorithms.
- *
- * By default, LZO compression is enabled if SF_CRC32_MODE is set. Use
- * SF_COMPRESSION_ALG_LZ4 to override this behaviour and use LZ4.
- *
- * SF_CRC32_MODE, SF_COMPRESSION_ALG_LZO(dummy) -> Compression, LZO
- * SF_CRC32_MODE, SF_COMPRESSION_ALG_LZ4 -> Compression, LZ4
- */
-#define SF_COMPRESSION_ALG_LZ4	16
+#define SF_HW_SIG		8
 
 /* kernel/power/hibernate.c */
-extern int swsusp_check(void);
+int swsusp_check(bool exclusive);
 extern void swsusp_free(void);
 extern int swsusp_read(unsigned int *flags_p);
 extern int swsusp_write(unsigned int flags);
-extern void swsusp_close(fmode_t);
+void swsusp_close(bool exclusive);
 #ifdef CONFIG_SUSPEND
 extern int swsusp_unmark(void);
 #endif
@@ -231,6 +218,11 @@ static inline void suspend_test_finish(const char *label) {}
 /* kernel/power/main.c */
 extern int pm_notifier_call_chain_robust(unsigned long val_up, unsigned long val_down);
 extern int pm_notifier_call_chain(unsigned long val);
+void pm_restrict_gfp_mask(void);
+void pm_restore_gfp_mask(void);
+#else
+static inline void pm_restrict_gfp_mask(void) {}
+static inline void pm_restore_gfp_mask(void) {}
 #endif
 
 #ifdef CONFIG_HIGHMEM
@@ -329,3 +321,15 @@ extern int pm_wake_lock(const char *buf);
 extern int pm_wake_unlock(const char *buf);
 
 #endif /* !CONFIG_PM_WAKELOCKS */
+
+static inline int pm_sleep_disable_secondary_cpus(void)
+{
+	cpuidle_pause();
+	return suspend_disable_secondary_cpus();
+}
+
+static inline void pm_sleep_enable_secondary_cpus(void)
+{
+	suspend_enable_secondary_cpus();
+	cpuidle_resume();
+}

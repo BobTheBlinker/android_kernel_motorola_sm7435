@@ -140,8 +140,7 @@ void panel_event_notification_trigger(enum panel_event_notifier_tag tag,
 		mutex_lock(&panel_event_notifier_entries_lock);
 		entry = &panel_event_notifier_entries[i];
 		if (notification->panel != entry->panel) {
-			pr_debug("invalid panel found notification_panel:0x%x entry_panel:0x%x\n",
-					notification->panel, entry->panel);
+			pr_debug("invalid panel found notification_panel\n");
 			mutex_unlock(&panel_event_notifier_entries_lock);
 			continue;
 		}
@@ -180,5 +179,5 @@ static void __exit panel_event_notifier_exit(void)
 }
 module_exit(panel_event_notifier_exit);
 
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Qualcomm Technologies, Inc. Panel event notifier");

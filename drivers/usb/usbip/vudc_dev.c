@@ -333,6 +333,7 @@ static int vep_queue(struct usb_ep *_ep, struct usb_request *_req,
 static int vep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 {
 	struct vep *ep;
+	struct vrequest *req;
 	struct vudc *udc;
 	struct vrequest *lst;
 	unsigned long flags;
@@ -342,7 +343,8 @@ static int vep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 		return ret;
 
 	ep = to_vep(_ep);
-	udc = ep_to_vudc(ep);
+	req = to_vrequest(_req);
+	udc = req->udc;
 
 	if (!udc->driver)
 		return -ESHUTDOWN;
@@ -487,11 +489,11 @@ static void vudc_device_unusable(struct usbip_device *ud)
 
 struct vudc_device *alloc_vudc_device(int devid)
 {
-	struct vudc_device *udc_dev = NULL;
+	struct vudc_device *udc_dev;
 
 	udc_dev = kzalloc(sizeof(*udc_dev), GFP_KERNEL);
 	if (!udc_dev)
-		goto out;
+		return NULL;
 
 	INIT_LIST_HEAD(&udc_dev->dev_entry);
 
@@ -501,7 +503,6 @@ struct vudc_device *alloc_vudc_device(int devid)
 		udc_dev = NULL;
 	}
 
-out:
 	return udc_dev;
 }
 

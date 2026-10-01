@@ -114,8 +114,6 @@ static const struct attribute_group com20020_state_group = {
 	.attrs = com20020_state_attrs,
 };
 
-static struct com20020_pci_card_info card_info_2p5mbit;
-
 static void com20020pci_remove(struct pci_dev *pdev);
 
 static int com20020pci_probe(struct pci_dev *pdev,
@@ -141,7 +139,7 @@ static int com20020pci_probe(struct pci_dev *pdev,
 
 	ci = (struct com20020_pci_card_info *)id->driver_data;
 	if (!ci)
-		ci = &card_info_2p5mbit;
+		return -EINVAL;
 
 	priv->ci = ci;
 	mm = &ci->misc_map;
@@ -199,7 +197,7 @@ static int com20020pci_probe(struct pci_dev *pdev,
 
 		SET_NETDEV_DEV(dev, &pdev->dev);
 		dev->base_addr = ioaddr;
-		dev->dev_addr[0] = node;
+		arcnet_set_addr(dev, node);
 		dev->sysfs_groups[0] = &com20020_state_group;
 		dev->irq = pdev->irq;
 		lp->card_name = "PCI COM20020";
@@ -346,18 +344,6 @@ static struct com20020_pci_card_info card_info_5mbit = {
 		},
 	},
 	.flags = ARC_IS_5MBIT,
-};
-
-static struct com20020_pci_card_info card_info_2p5mbit = {
-	.name = "ARC-PCI",
-	.devcount = 1,
-	.chan_map_tbl = {
-		{
-			.bar = 2,
-			.offset = 0x00,
-			.size = 0x08,
-		},
-	},
 };
 
 static struct com20020_pci_card_info card_info_sohard = {

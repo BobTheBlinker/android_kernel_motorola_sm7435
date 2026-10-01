@@ -1248,20 +1248,22 @@ TRACE_EVENT(ocfs2_write_end_inline,
 
 TRACE_EVENT(ocfs2_fault,
 	TP_PROTO(unsigned long long ino,
-		 void *page, unsigned long pgoff),
-	TP_ARGS(ino, page, pgoff),
+		 void *area, void *page, unsigned long pgoff),
+	TP_ARGS(ino, area, page, pgoff),
 	TP_STRUCT__entry(
 		__field(unsigned long long, ino)
+		__field(void *, area)
 		__field(void *, page)
 		__field(unsigned long, pgoff)
 	),
 	TP_fast_assign(
 		__entry->ino = ino;
+		__entry->area = area;
 		__entry->page = page;
 		__entry->pgoff = pgoff;
 	),
-	TP_printk("%llu %p %lu",
-		  __entry->ino, __entry->page, __entry->pgoff)
+	TP_printk("%llu %p %p %lu",
+		  __entry->ino, __entry->area, __entry->page, __entry->pgoff)
 );
 
 /* End of trace events for fs/ocfs2/mmap.c. */
@@ -1313,9 +1315,9 @@ DEFINE_OCFS2_FILE_OPS(ocfs2_sync_file);
 
 DEFINE_OCFS2_FILE_OPS(ocfs2_file_write_iter);
 
-DEFINE_OCFS2_FILE_OPS(ocfs2_file_splice_write);
-
 DEFINE_OCFS2_FILE_OPS(ocfs2_file_read_iter);
+
+DEFINE_OCFS2_FILE_OPS(ocfs2_file_splice_read);
 
 DEFINE_OCFS2_ULL_ULL_ULL_EVENT(ocfs2_truncate_file);
 
@@ -1468,6 +1470,7 @@ TRACE_EVENT(ocfs2_prepare_inode_for_write,
 );
 
 DEFINE_OCFS2_INT_EVENT(generic_file_read_iter_ret);
+DEFINE_OCFS2_INT_EVENT(filemap_splice_read_ret);
 
 /* End of trace events for fs/ocfs2/file.c. */
 

@@ -130,7 +130,7 @@ static struct iucv_handler hvc_iucv_handler = {
  */
 static struct hvc_iucv_private *hvc_iucv_get_private(uint32_t num)
 {
-	if (num >= hvc_iucv_devices)
+	if (num > hvc_iucv_devices)
 		return NULL;
 	return hvc_iucv_table[num];
 }
@@ -437,8 +437,6 @@ static void hvc_iucv_sndbuf_work(struct work_struct *work)
 	struct hvc_iucv_private *priv;
 
 	priv = container_of(work, struct hvc_iucv_private, sndbuf_work.work);
-	if (!priv)
-		return;
 
 	spin_lock_bh(&priv->lock);
 	hvc_iucv_send(priv);
@@ -660,13 +658,13 @@ static void hvc_iucv_notifier_hangup(struct hvc_struct *hp, int id)
 /**
  * hvc_iucv_dtr_rts() - HVC notifier for handling DTR/RTS
  * @hp:		Pointer the HVC device (struct hvc_struct)
- * @raise:	Non-zero to raise or zero to lower DTR/RTS lines
+ * @active:	True to raise or false to lower DTR/RTS lines
  *
  * This routine notifies the HVC back-end to raise or lower DTR/RTS
  * lines.  Raising DTR/RTS is ignored.  Lowering DTR/RTS indicates to
  * drop the IUCV connection (similar to hang up the modem).
  */
-static void hvc_iucv_dtr_rts(struct hvc_struct *hp, int raise)
+static void hvc_iucv_dtr_rts(struct hvc_struct *hp, bool active)
 {
 	struct hvc_iucv_private *priv;
 	struct iucv_path        *path;
@@ -674,7 +672,7 @@ static void hvc_iucv_dtr_rts(struct hvc_struct *hp, int raise)
 	/* Raising the DTR/RTS is ignored as IUCV connections can be
 	 * established at any times.
 	 */
-	if (raise)
+	if (active)
 		return;
 
 	priv = hvc_iucv_get_private(hp->vtermno);
@@ -965,37 +963,6 @@ static void hvc_iucv_msg_complete(struct iucv_path *path,
 	destroy_tty_buffer_list(&list_remove);
 }
 
-/**
- * hvc_iucv_pm_freeze() - Freeze PM callback
- * @dev:	IUVC HVC terminal device
- *
- * Sever an established IUCV communication path and
- * trigger a hang-up of the underlying HVC terminal.
- */
-static int hvc_iucv_pm_freeze(struct device *dev)
-{
-	struct hvc_iucv_private *priv = dev_get_drvdata(dev);
-
-	local_bh_disable();
-	hvc_iucv_hangup(priv);
-	local_bh_enable();
-
-	return 0;
-}
-
-/**
- * hvc_iucv_pm_restore_thaw() - Thaw and restore PM callback
- * @dev:	IUVC HVC terminal device
- *
- * Wake up the HVC thread to trigger hang-up and respective
- * HVC back-end notifier invocations.
- */
-static int hvc_iucv_pm_restore_thaw(struct device *dev)
-{
-	hvc_kick();
-	return 0;
-}
-
 static ssize_t hvc_iucv_dev_termid_show(struct device *dev,
 					struct device_attribute *attr,
 					char *buf)
@@ -1048,20 +1015,6 @@ static const struct hv_ops hvc_iucv_ops = {
 	.notifier_del = hvc_iucv_notifier_del,
 	.notifier_hangup = hvc_iucv_notifier_hangup,
 	.dtr_rts = hvc_iucv_dtr_rts,
-};
-
-/* Suspend / resume device operations */
-static const struct dev_pm_ops hvc_iucv_pm_ops = {
-	.freeze	  = hvc_iucv_pm_freeze,
-	.thaw	  = hvc_iucv_pm_restore_thaw,
-	.restore  = hvc_iucv_pm_restore_thaw,
-};
-
-/* IUCV HVC device driver */
-static struct device_driver hvc_iucv_driver = {
-	.name = KMSG_COMPONENT,
-	.bus  = &iucv_bus,
-	.pm   = &hvc_iucv_pm_ops,
 };
 
 /* IUCV HVC device attributes */
@@ -1143,7 +1096,6 @@ static int __init hvc_iucv_alloc(int id, unsigned int is_console)
 	dev_set_drvdata(priv->dev, priv);
 	priv->dev->bus = &iucv_bus;
 	priv->dev->parent = iucv_root;
-	priv->dev->driver = &hvc_iucv_driver;
 	priv->dev->groups = hvc_iucv_dev_attr_groups;
 	priv->dev->release = (void (*)(struct device *)) kfree;
 	rc = device_register(priv->dev);
@@ -1374,11 +1326,6 @@ static int __init hvc_iucv_init(void)
 		rc = -EINVAL;
 		goto out_error;
 	}
-
-	/* register IUCV HVC device driver */
-	rc = driver_register(&hvc_iucv_driver);
-	if (rc)
-		goto out_error;
 
 	/* parse hvc_iucv_allow string and create z/VM user ID filter list */
 	if (hvc_iucv_filter_string) {

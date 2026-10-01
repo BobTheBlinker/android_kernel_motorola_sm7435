@@ -294,7 +294,7 @@ static inline unsigned long red_calc_qavg_from_idle_time(const struct red_parms 
 	int  shift;
 
 	/*
-	 * The problem: ideally, average length queue recalcultion should
+	 * The problem: ideally, average length queue recalculation should
 	 * be done over constant clock intervals. This is too expensive, so
 	 * that the calculation is driven by outgoing packets.
 	 * When the queue is idle we have to model this clock by hand.
@@ -363,7 +363,7 @@ static inline unsigned long red_calc_qavg(const struct red_parms *p,
 
 static inline u32 red_random(const struct red_parms *p)
 {
-	return reciprocal_divide(prandom_u32(), p->max_P_reciprocal);
+	return reciprocal_divide(get_random_u32(), p->max_P_reciprocal);
 }
 
 static inline int red_mark_probability(const struct red_parms *p,

@@ -23,7 +23,11 @@
 #define HIDG_MINORS	4
 
 static int major, minors;
-static struct class *hidg_class;
+
+static const struct class hidg_class = {
+	.name = "hidg",
+};
+
 static DEFINE_IDA(hidg_ida);
 static DEFINE_MUTEX(hidg_ida_lock); /* protects access to hidg_ida */
 
@@ -996,8 +1000,13 @@ static int hidg_bind(struct usb_configuration *c, struct usb_function *f)
 	if (status)
 		goto fail;
 
+	spin_lock_init(&hidg->write_spinlock);
 	hidg->write_pending = 1;
 	hidg->req = NULL;
+	spin_lock_init(&hidg->read_spinlock);
+	init_waitqueue_head(&hidg->write_queue);
+	init_waitqueue_head(&hidg->read_queue);
+	INIT_LIST_HEAD(&hidg->completed_out_req);
 
 	/* create char device */
 	cdev_init(&hidg->cdev, &f_hidg_fops);
@@ -1020,9 +1029,9 @@ static inline int hidg_get_minor(void)
 {
 	int ret;
 
-	ret = ida_simple_get(&hidg_ida, 0, 0, GFP_KERNEL);
+	ret = ida_alloc(&hidg_ida, GFP_KERNEL);
 	if (ret >= HIDG_MINORS) {
-		ida_simple_remove(&hidg_ida, ret);
+		ida_free(&hidg_ida, ret);
 		ret = -ENODEV;
 	}
 
@@ -1167,7 +1176,7 @@ static const struct config_item_type hid_func_type = {
 
 static inline void hidg_put_minor(int minor)
 {
-	ida_simple_remove(&hidg_ida, minor);
+	ida_free(&hidg_ida, minor);
 }
 
 static void hidg_free_inst(struct usb_function_instance *f)
@@ -1266,19 +1275,13 @@ static struct usb_function *hidg_alloc(struct usb_function_instance *fi)
 
 	mutex_lock(&opts->lock);
 
-	spin_lock_init(&hidg->write_spinlock);
-	spin_lock_init(&hidg->read_spinlock);
-	init_waitqueue_head(&hidg->write_queue);
-	init_waitqueue_head(&hidg->read_queue);
-	INIT_LIST_HEAD(&hidg->completed_out_req);
-
 	device_initialize(&hidg->dev);
 	hidg->dev.release = hidg_release;
-	hidg->dev.class = hidg_class;
+	hidg->dev.class = &hidg_class;
 	hidg->dev.devt = MKDEV(major, opts->minor);
 	ret = dev_set_name(&hidg->dev, "hidg%d", opts->minor);
 	if (ret)
-		goto err_put_device;
+		goto err_unlock;
 
 	hidg->bInterfaceSubClass = opts->subclass;
 	hidg->bInterfaceProtocol = opts->protocol;
@@ -1306,13 +1309,14 @@ static struct usb_function *hidg_alloc(struct usb_function_instance *fi)
 	hidg->func.setup   = hidg_setup;
 	hidg->func.free_func = hidg_free;
 
-	/* this could me made configurable at some point */
+	/* this could be made configurable at some point */
 	hidg->qlen	   = 4;
 
 	return &hidg->func;
 
 err_put_device:
 	put_device(&hidg->dev);
+err_unlock:
 	mutex_unlock(&opts->lock);
 	return ERR_PTR(ret);
 }
@@ -1326,17 +1330,13 @@ int ghid_setup(struct usb_gadget *g, int count)
 	int status;
 	dev_t dev;
 
-	hidg_class = class_create(THIS_MODULE, "hidg");
-	if (IS_ERR(hidg_class)) {
-		status = PTR_ERR(hidg_class);
-		hidg_class = NULL;
+	status = class_register(&hidg_class);
+	if (status)
 		return status;
-	}
 
 	status = alloc_chrdev_region(&dev, 0, count, "hidg");
 	if (status) {
-		class_destroy(hidg_class);
-		hidg_class = NULL;
+		class_unregister(&hidg_class);
 		return status;
 	}
 
@@ -1353,6 +1353,5 @@ void ghid_cleanup(void)
 		major = minors = 0;
 	}
 
-	class_destroy(hidg_class);
-	hidg_class = NULL;
+	class_unregister(&hidg_class);
 }

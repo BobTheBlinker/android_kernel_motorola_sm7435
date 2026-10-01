@@ -11,7 +11,6 @@
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/spi/spi.h>
@@ -593,7 +592,6 @@ static irqreturn_t spi_qup_qup_irq(int irq, void *dev_id)
 {
 	struct spi_qup *controller = dev_id;
 	u32 opflags, qup_err, spi_err;
-	unsigned long flags;
 	int error = 0;
 
 	qup_err = readl_relaxed(controller->base + QUP_ERROR_FLAGS);
@@ -625,10 +623,10 @@ static irqreturn_t spi_qup_qup_irq(int irq, void *dev_id)
 		error = -EIO;
 	}
 
-	spin_lock_irqsave(&controller->lock, flags);
+	spin_lock(&controller->lock);
 	if (!controller->error)
 		controller->error = error;
-	spin_unlock_irqrestore(&controller->lock, flags);
+	spin_unlock(&controller->lock);
 
 	if (spi_qup_is_dma_xfer(controller->mode)) {
 		writel_relaxed(opflags, controller->base + QUP_OPERATIONAL);
@@ -969,11 +967,8 @@ static int spi_qup_init_dma(struct spi_controller *host, resource_size_t base)
 
 err:
 	dma_release_channel(host->dma_tx);
-	host->dma_tx = NULL;
 err_tx:
 	dma_release_channel(host->dma_rx);
-	host->dma_rx = NULL;
-
 	return ret;
 }
 
@@ -1007,8 +1002,7 @@ static int spi_qup_probe(struct platform_device *pdev)
 	int ret, irq, size;
 
 	dev = &pdev->dev;
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	base = devm_ioremap_resource(dev, res);
+	base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(base))
 		return PTR_ERR(base);
 
@@ -1033,7 +1027,7 @@ static int spi_qup_probe(struct platform_device *pdev)
 		return -ENXIO;
 	}
 
-	host = spi_alloc_master(dev, sizeof(struct spi_qup));
+	host = spi_alloc_host(dev, sizeof(struct spi_qup));
 	if (!host) {
 		dev_err(dev, "cannot allocate host\n");
 		return -ENOMEM;
@@ -1046,6 +1040,8 @@ static int spi_qup_probe(struct platform_device *pdev)
 	else
 		host->num_chipselect = num_cs;
 
+	host->use_gpio_descriptors = true;
+	host->max_native_cs = SPI_NUM_CHIPSELECTS;
 	host->bus_num = pdev->id;
 	host->mode_bits = SPI_CPOL | SPI_CPHA | SPI_CS_HIGH | SPI_LOOP;
 	host->bits_per_word_mask = SPI_BPW_RANGE_MASK(4, 32);
@@ -1272,7 +1268,7 @@ disable_clk:
 }
 #endif /* CONFIG_PM_SLEEP */
 
-static int spi_qup_remove(struct platform_device *pdev)
+static void spi_qup_remove(struct platform_device *pdev)
 {
 	struct spi_controller *host = dev_get_drvdata(&pdev->dev);
 	struct spi_qup *controller = spi_controller_get_devdata(host);
@@ -1297,8 +1293,6 @@ static int spi_qup_remove(struct platform_device *pdev)
 
 	pm_runtime_put_noidle(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
 static const struct of_device_id spi_qup_dt_match[] = {
@@ -1323,7 +1317,7 @@ static struct platform_driver spi_qup_driver = {
 		.of_match_table = spi_qup_dt_match,
 	},
 	.probe = spi_qup_probe,
-	.remove = spi_qup_remove,
+	.remove_new = spi_qup_remove,
 };
 module_platform_driver(spi_qup_driver);
 

@@ -34,9 +34,9 @@ struct wdat_instruction {
  * @period: How long is one watchdog period in ms
  * @stopped_in_sleep: Is this watchdog stopped by the firmware in S1-S5
  * @stopped: Was the watchdog stopped by the driver in suspend
- * @actions: An array of instruction lists indexed by an action number from
- *           the WDAT table. There can be %NULL entries for not implemented
- *           actions.
+ * @instructions: An array of instruction lists indexed by an action number from
+ *                the WDAT table. There can be %NULL entries for not implemented
+ *                actions.
  */
 struct wdat_wdt {
 	struct platform_device *pdev;
@@ -208,7 +208,7 @@ static int wdat_wdt_enable_reboot(struct wdat_wdt *wdat)
 	/*
 	 * WDAT specification says that the watchdog is required to reboot
 	 * the system when it fires. However, it also states that it is
-	 * recommeded to make it configurable through hardware register. We
+	 * recommended to make it configurable through hardware register. We
 	 * enable reboot now if it is configurable, just in case.
 	 */
 	ret = wdat_wdt_run_action(wdat, ACPI_WDAT_SET_REBOOT, 0, NULL);
@@ -301,13 +301,12 @@ static const struct watchdog_info wdat_wdt_info = {
 	.identity = "wdat_wdt",
 };
 
-static const struct watchdog_ops wdat_wdt_ops = {
+static struct watchdog_ops wdat_wdt_ops = {
 	.owner = THIS_MODULE,
 	.start = wdat_wdt_start,
 	.stop = wdat_wdt_stop,
 	.ping = wdat_wdt_ping,
 	.set_timeout = wdat_wdt_set_timeout,
-	.get_timeleft = wdat_wdt_get_timeleft,
 };
 
 static int wdat_wdt_probe(struct platform_device *pdev)
@@ -327,31 +326,23 @@ static int wdat_wdt_probe(struct platform_device *pdev)
 		return -ENODEV;
 
 	wdat = devm_kzalloc(dev, sizeof(*wdat), GFP_KERNEL);
-	if (!wdat) {
-		ret = -ENOMEM;
-		goto out_put_table;
-	}
+	if (!wdat)
+		return -ENOMEM;
 
 	regs = devm_kcalloc(dev, pdev->num_resources, sizeof(*regs),
 			    GFP_KERNEL);
-	if (!regs) {
-		ret = -ENOMEM;
-		goto out_put_table;
-	}
+	if (!regs)
+		return -ENOMEM;
 
 	/* WDAT specification wants to have >= 1ms period */
-	if (tbl->timer_period < 1) {
-		ret = -EINVAL;
-		goto out_put_table;
-	}
-	if (tbl->min_count > tbl->max_count) {
-		ret = -EINVAL;
-		goto out_put_table;
-	}
+	if (tbl->timer_period < 1)
+		return -EINVAL;
+	if (tbl->min_count > tbl->max_count)
+		return -EINVAL;
 
 	wdat->period = tbl->timer_period;
-	wdat->wdd.min_hw_heartbeat_ms = wdat->period * tbl->min_count;
-	wdat->wdd.max_hw_heartbeat_ms = wdat->period * tbl->max_count;
+	wdat->wdd.min_timeout = DIV_ROUND_UP(wdat->period * tbl->min_count, 1000);
+	wdat->wdd.max_timeout = wdat->period * tbl->max_count / 1000;
 	wdat->stopped_in_sleep = tbl->flags & ACPI_WDAT_STOPPED;
 	wdat->wdd.info = &wdat_wdt_info;
 	wdat->wdd.ops = &wdat_wdt_ops;
@@ -364,20 +355,15 @@ static int wdat_wdt_probe(struct platform_device *pdev)
 		res = &pdev->resource[i];
 		if (resource_type(res) == IORESOURCE_MEM) {
 			reg = devm_ioremap_resource(dev, res);
-			if (IS_ERR(reg)) {
-				ret = PTR_ERR(reg);
-				goto out_put_table;
-			}
+			if (IS_ERR(reg))
+				return PTR_ERR(reg);
 		} else if (resource_type(res) == IORESOURCE_IO) {
 			reg = devm_ioport_map(dev, res->start, 1);
-			if (!reg) {
-				ret = -ENOMEM;
-				goto out_put_table;
-			}
+			if (!reg)
+				return -ENOMEM;
 		} else {
 			dev_err(dev, "Unsupported resource\n");
-			ret = -EINVAL;
-			goto out_put_table;
+			return -EINVAL;
 		}
 
 		regs[i] = reg;
@@ -399,10 +385,8 @@ static int wdat_wdt_probe(struct platform_device *pdev)
 		}
 
 		instr = devm_kzalloc(dev, sizeof(*instr), GFP_KERNEL);
-		if (!instr) {
-			ret = -ENOMEM;
-			goto out_put_table;
-		}
+		if (!instr)
+			return -ENOMEM;
 
 		INIT_LIST_HEAD(&instr->node);
 		instr->entry = entries[i];
@@ -433,8 +417,7 @@ static int wdat_wdt_probe(struct platform_device *pdev)
 
 		if (!instr->reg) {
 			dev_err(dev, "I/O resource not found\n");
-			ret = -EINVAL;
-			goto out_put_table;
+			return -EINVAL;
 		}
 
 		instructions = wdat->instructions[action];
@@ -442,10 +425,8 @@ static int wdat_wdt_probe(struct platform_device *pdev)
 			instructions = devm_kzalloc(dev,
 						    sizeof(*instructions),
 						    GFP_KERNEL);
-			if (!instructions) {
-				ret = -ENOMEM;
-				goto out_put_table;
-			}
+			if (!instructions)
+				return -ENOMEM;
 
 			INIT_LIST_HEAD(instructions);
 			wdat->instructions[action] = instructions;
@@ -454,12 +435,15 @@ static int wdat_wdt_probe(struct platform_device *pdev)
 		list_add_tail(&instr->node, instructions);
 	}
 
+	if (wdat->instructions[ACPI_WDAT_GET_CURRENT_COUNTDOWN])
+		wdat_wdt_ops.get_timeleft = wdat_wdt_get_timeleft;
+
 	wdat_wdt_boot_status(wdat);
 	wdat_wdt_set_running(wdat);
 
 	ret = wdat_wdt_enable_reboot(wdat);
 	if (ret)
-		goto out_put_table;
+		return ret;
 
 	platform_set_drvdata(pdev, wdat);
 
@@ -468,8 +452,7 @@ static int wdat_wdt_probe(struct platform_device *pdev)
 	 * watchdog properly after it has opened the device. In some cases
 	 * the BIOS default is too short and causes immediate reboot.
 	 */
-	if (timeout * 1000 < wdat->wdd.min_hw_heartbeat_ms ||
-	    timeout * 1000 > wdat->wdd.max_hw_heartbeat_ms) {
+	if (watchdog_timeout_invalid(&wdat->wdd, timeout)) {
 		dev_warn(dev, "Invalid timeout %d given, using %d\n",
 			 timeout, WDAT_DEFAULT_TIMEOUT);
 		timeout = WDAT_DEFAULT_TIMEOUT;
@@ -477,19 +460,14 @@ static int wdat_wdt_probe(struct platform_device *pdev)
 
 	ret = wdat_wdt_set_timeout(&wdat->wdd, timeout);
 	if (ret)
-		goto out_put_table;
+		return ret;
 
 	watchdog_set_nowayout(&wdat->wdd, nowayout);
 	watchdog_stop_on_reboot(&wdat->wdd);
 	watchdog_stop_on_unregister(&wdat->wdd);
-	ret = devm_watchdog_register_device(dev, &wdat->wdd);
-
-out_put_table:
-	acpi_put_table((struct acpi_table_header *)tbl);
-	return ret;
+	return devm_watchdog_register_device(dev, &wdat->wdd);
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int wdat_wdt_suspend_noirq(struct device *dev)
 {
 	struct wdat_wdt *wdat = dev_get_drvdata(dev);
@@ -499,7 +477,7 @@ static int wdat_wdt_suspend_noirq(struct device *dev)
 		return 0;
 
 	/*
-	 * We need to stop the watchdog if firmare is not doing it or if we
+	 * We need to stop the watchdog if firmware is not doing it or if we
 	 * are going suspend to idle (where firmware is not involved). If
 	 * firmware is stopping the watchdog we kick it here one more time
 	 * to give it some time.
@@ -550,18 +528,16 @@ static int wdat_wdt_resume_noirq(struct device *dev)
 
 	return wdat_wdt_start(&wdat->wdd);
 }
-#endif
 
 static const struct dev_pm_ops wdat_wdt_pm_ops = {
-	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(wdat_wdt_suspend_noirq,
-				      wdat_wdt_resume_noirq)
+	NOIRQ_SYSTEM_SLEEP_PM_OPS(wdat_wdt_suspend_noirq, wdat_wdt_resume_noirq)
 };
 
 static struct platform_driver wdat_wdt_driver = {
 	.probe = wdat_wdt_probe,
 	.driver = {
 		.name = "wdat_wdt",
-		.pm = &wdat_wdt_pm_ops,
+		.pm = pm_sleep_ptr(&wdat_wdt_pm_ops),
 	},
 };
 

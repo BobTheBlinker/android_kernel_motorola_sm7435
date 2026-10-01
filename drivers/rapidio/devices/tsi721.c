@@ -384,6 +384,7 @@ static void tsi721_db_dpc(struct work_struct *work)
 						    idb_work);
 	struct rio_mport *mport;
 	struct rio_dbell *dbell;
+	int found = 0;
 	u32 wr_ptr, rd_ptr;
 	u64 *idb_entry;
 	u32 regval;
@@ -401,8 +402,6 @@ static void tsi721_db_dpc(struct work_struct *work)
 	rd_ptr = ioread32(priv->regs + TSI721_IDQ_RP(IDB_QUEUE)) % IDB_QSIZE;
 
 	while (wr_ptr != rd_ptr) {
-		int found = 0;
-
 		idb_entry = (u64 *)(priv->idb_base +
 					(TSI721_IDB_ENTRY_SIZE * rd_ptr));
 		rd_ptr++;
@@ -2837,17 +2836,17 @@ static int tsi721_probe(struct pci_dev *pdev,
 	}
 
 	/* Configure DMA attributes. */
-	if (pci_set_dma_mask(pdev, DMA_BIT_MASK(64))) {
-		err = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
+	if (dma_set_mask(&pdev->dev, DMA_BIT_MASK(64))) {
+		err = dma_set_mask(&pdev->dev, DMA_BIT_MASK(32));
 		if (err) {
 			tsi_err(&pdev->dev, "Unable to set DMA mask");
 			goto err_unmap_bars;
 		}
 
-		if (pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32)))
+		if (dma_set_coherent_mask(&pdev->dev, DMA_BIT_MASK(32)))
 			tsi_info(&pdev->dev, "Unable to set consistent DMA mask");
 	} else {
-		err = pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64));
+		err = dma_set_coherent_mask(&pdev->dev, DMA_BIT_MASK(64));
 		if (err)
 			tsi_info(&pdev->dev, "Unable to set consistent DMA mask");
 	}
@@ -2925,7 +2924,6 @@ err_unmap_bars:
 		iounmap(priv->odb_base);
 err_free_res:
 	pci_release_regions(pdev);
-	pci_clear_master(pdev);
 err_disable_pdev:
 	pci_disable_device(pdev);
 err_clean:
@@ -2942,7 +2940,8 @@ static void tsi721_remove(struct pci_dev *pdev)
 
 	tsi721_disable_ints(priv);
 	tsi721_free_irq(priv);
-	flush_scheduled_work();
+	flush_work(&priv->idb_work);
+	flush_work(&priv->pw_work);
 	rio_unregister_mport(&priv->mport);
 
 	tsi721_unregister_dma(priv);
@@ -2962,7 +2961,6 @@ static void tsi721_remove(struct pci_dev *pdev)
 		pci_disable_msi(priv->pdev);
 #endif
 	pci_release_regions(pdev);
-	pci_clear_master(pdev);
 	pci_disable_device(pdev);
 	pci_set_drvdata(pdev, NULL);
 	kfree(priv);
@@ -2977,7 +2975,6 @@ static void tsi721_shutdown(struct pci_dev *pdev)
 
 	tsi721_disable_ints(priv);
 	tsi721_dma_stop_all(priv);
-	pci_clear_master(pdev);
 	pci_disable_device(pdev);
 }
 

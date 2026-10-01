@@ -1023,6 +1023,9 @@ static int rtl8180_init_rx_ring(struct ieee80211_hw *dev)
 		dma_addr_t *mapping;
 		entry = priv->rx_ring + priv->rx_ring_sz*i;
 		if (!skb) {
+			dma_free_coherent(&priv->pdev->dev,
+					  priv->rx_ring_sz * 32,
+					  priv->rx_ring, priv->rx_ring_dma);
 			wiphy_err(dev->wiphy, "Cannot allocate RX skb\n");
 			return -ENOMEM;
 		}
@@ -1034,7 +1037,9 @@ static int rtl8180_init_rx_ring(struct ieee80211_hw *dev)
 
 		if (dma_mapping_error(&priv->pdev->dev, *mapping)) {
 			kfree_skb(skb);
-			priv->rx_buf[i] = NULL;
+			dma_free_coherent(&priv->pdev->dev,
+					  priv->rx_ring_sz * 32,
+					  priv->rx_ring, priv->rx_ring_dma);
 			wiphy_err(dev->wiphy, "Cannot map DMA for RX skb\n");
 			return -ENOMEM;
 		}
@@ -1125,7 +1130,7 @@ static int rtl8180_start(struct ieee80211_hw *dev)
 
 	ret = rtl8180_init_rx_ring(dev);
 	if (ret)
-		goto err_free_rings;
+		return ret;
 
 	for (i = 0; i < (dev->queues + 1); i++)
 		if ((ret = rtl8180_init_tx_ring(dev, i, 16)))
@@ -1295,7 +1300,7 @@ static void rtl8180_beacon_work(struct work_struct *work)
 		goto resched;
 
 	/* grab a fresh beacon */
-	skb = ieee80211_beacon_get(dev, vif);
+	skb = ieee80211_beacon_get(dev, vif, 0);
 	if (!skb)
 		goto resched;
 
@@ -1419,7 +1424,8 @@ static void rtl8187se_conf_ac_parm(struct ieee80211_hw *dev, u8 queue)
 }
 
 static int rtl8180_conf_tx(struct ieee80211_hw *dev,
-			    struct ieee80211_vif *vif, u16 queue,
+			    struct ieee80211_vif *vif,
+			    unsigned int link_id, u16 queue,
 			    const struct ieee80211_tx_queue_params *params)
 {
 	struct rtl8180_priv *priv = dev->priv;
@@ -1495,7 +1501,7 @@ static void rtl8180_conf_erp(struct ieee80211_hw *dev,
 static void rtl8180_bss_info_changed(struct ieee80211_hw *dev,
 				     struct ieee80211_vif *vif,
 				     struct ieee80211_bss_conf *info,
-				     u32 changed)
+				     u64 changed)
 {
 	struct rtl8180_priv *priv = dev->priv;
 	struct rtl8180_vif *vif_priv;
@@ -1602,6 +1608,7 @@ static void rtl8180_configure_filter(struct ieee80211_hw *dev,
 
 static const struct ieee80211_ops rtl8180_ops = {
 	.tx			= rtl8180_tx,
+	.wake_tx_queue		= ieee80211_handle_wake_tx_queue,
 	.start			= rtl8180_start,
 	.stop			= rtl8180_stop,
 	.add_interface		= rtl8180_add_interface,

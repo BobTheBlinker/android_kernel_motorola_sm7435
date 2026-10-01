@@ -129,6 +129,9 @@ wpan_phy_new(const struct cfg802154_ops *ops, size_t priv_size)
 	wpan_phy_net_set(&rdev->wpan_phy, &init_net);
 
 	init_waitqueue_head(&rdev->dev_wait);
+	init_waitqueue_head(&rdev->wpan_phy.sync_txq);
+
+	spin_lock_init(&rdev->wpan_phy.queue_lock);
 
 	return &rdev->wpan_phy;
 }
@@ -324,7 +327,7 @@ static void __net_exit cfg802154_pernet_exit(struct net *net)
 	rtnl_lock();
 	list_for_each_entry(rdev, &cfg802154_rdev_list, list) {
 		if (net_eq(wpan_phy_net(&rdev->wpan_phy), net))
-			cfg802154_switch_netns(rdev, &init_net);
+			WARN_ON(cfg802154_switch_netns(rdev, &init_net));
 	}
 	rtnl_unlock();
 }

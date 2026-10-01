@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2020-2021 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt)	"altmode-glink: %s: " fmt, __func__
@@ -15,7 +16,7 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/soc/qcom/altmode-glink.h>
-#include <linux/soc/qcom/pmic_glink.h>
+#include <linux/soc/qcom/qti_pmic_glink.h>
 
 #define MSG_OWNER_USBC_PAN	32780
 #define MSG_TYPE_REQ_RESP	1
@@ -37,7 +38,7 @@
 #define altmode_dbg(fmt, ...) \
 	do { \
 		ipc_log_string(altmode_ipc_log, fmt, ##__VA_ARGS__); \
-		pr_info(fmt, ##__VA_ARGS__); \
+		pr_debug(fmt, ##__VA_ARGS__); \
 	} while (0)
 
 struct usbc_notify_ind_msg {
@@ -172,7 +173,7 @@ static int __altmode_send_data(struct altmode_dev *amdev, void *data,
 	struct usbc_write_buffer_req_msg msg = { { 0 } };
 
 	if (len > sizeof(msg.buf)) {
-		pr_err("len %zu exceeds msg buf's size: %zu\n",
+		pr_err("len %zu exceeds msg buf's size: %d\n",
 				len, USBC_WRITE_BUFFER_SIZE);
 		return -EINVAL;
 	}
@@ -408,8 +409,6 @@ struct altmode_client *altmode_register_client(struct device *client_dev,
 
 	list_add(&amclient->c_node, &amdev->client_list);
 	mutex_unlock(&amdev->client_lock);
-       pr_info("success allocated idr for client %s. key=0x%x\n",
-				client_data->name, key);
 
 	if (!atomic_read(&amdev->pan_en_sent))
 		schedule_delayed_work(&amdev->send_pan_en_work,
@@ -446,8 +445,6 @@ int altmode_deregister_client(struct altmode_client *client)
 
 	mutex_lock(&amdev->client_lock);
 	idr_remove(&amdev->client_idr, IDR_KEY(client));
-       pr_info("success removed idr for client %s. key=0x%x\n",
-				client->data.name, IDR_KEY(client));
 
 	list_for_each_entry_safe(pos, tmp, &amdev->client_list, c_node) {
 		if (pos == client)
@@ -558,7 +555,7 @@ static int altmode_callback(void *priv, void *data, size_t len)
 		break;
 	case USBC_NOTIFY_IND:
 		if (len != sizeof(*notify_msg)) {
-			altmode_dbg("Expected length %u, got: %zu\n",
+			altmode_dbg("Expected length %zu, got: %zu\n",
 					sizeof(*notify_msg), len);
 			return -EINVAL;
 		}
@@ -571,6 +568,9 @@ static int altmode_callback(void *priv, void *data, size_t len)
 					port_index));
 		mutex_unlock(&amdev->client_lock);
 
+		altmode_dbg("Payload: %*ph\n", NOTIFY_PAYLOAD_SIZE,
+				notify_msg->payload);
+
 		if (!amclient) {
 			altmode_dbg("No client associated with SVID %#x port %u\n",
 					svid, port_index);
@@ -579,9 +579,6 @@ static int altmode_callback(void *priv, void *data, size_t len)
 					msecs_to_jiffies(20));
 			return 0;
 		}
-
-		altmode_dbg("Payload: %*ph\n", NOTIFY_PAYLOAD_SIZE,
-				notify_msg->payload);
 
 		cancel_work_sync(&amclient->client_cb_work);
 		memcpy(&amclient->msg, notify_msg->payload,
@@ -641,7 +638,7 @@ static int send_ack_write(void *data, u64 val)
 
 	rc = __altmode_send_data(amdev, &ack, sizeof(ack));
 	if (rc < 0) {
-		dev_err(amdev->dev, "port %d: Failed sending PAN ACK: %llu\n",
+		dev_err(amdev->dev, "port %llu: Failed sending PAN ACK: %d\n",
 				val, rc);
 		return rc;
 	}
@@ -810,4 +807,4 @@ static struct platform_driver altmode_driver = {
 module_platform_driver(altmode_driver);
 
 MODULE_DESCRIPTION("QTI Type-C Alt Mode over GLINK");
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");

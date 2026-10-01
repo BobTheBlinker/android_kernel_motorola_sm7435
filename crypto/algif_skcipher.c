@@ -9,10 +9,10 @@
  * The following concept of the memory management is used:
  *
  * The kernel maintains two SGLs, the TX SGL and the RX SGL. The TX SGL is
- * filled by user space with the data submitted via sendpage/sendmsg. Filling
- * up the TX SGL does not cause a crypto operation -- the data will only be
- * tracked by the kernel. Upon receipt of one recvmsg call, the caller must
- * provide a buffer which is tracked with the RX SGL.
+ * filled by user space with the data submitted via sendmsg. Filling up the TX
+ * SGL does not cause a crypto operation -- the data will only be tracked by
+ * the kernel. Upon receipt of one recvmsg call, the caller must provide a
+ * buffer which is tracked with the RX SGL.
  *
  * During the processing of the recvmsg operation, the cipher request is
  * allocated and prepared. As part of the recvmsg operation, the processed
@@ -89,7 +89,7 @@ static int _skcipher_recvmsg(struct socket *sock, struct msghdr *msg,
 	 * Create a per request TX SGL for this request which tracks the
 	 * SG entries from the global TX SGL.
 	 */
-	areq->tsgl_entries = af_alg_count_tsgl(sk, len);
+	areq->tsgl_entries = af_alg_count_tsgl(sk, len, 0);
 	if (!areq->tsgl_entries)
 		areq->tsgl_entries = 1;
 	areq->tsgl = sock_kmalloc(sk, array_size(sizeof(*areq->tsgl),
@@ -100,31 +100,44 @@ static int _skcipher_recvmsg(struct socket *sock, struct msghdr *msg,
 		goto free;
 	}
 	sg_init_table(areq->tsgl, areq->tsgl_entries);
-	af_alg_pull_tsgl(sk, len, areq->tsgl);
+	af_alg_pull_tsgl(sk, len, areq->tsgl, 0);
 
 	/* Initialize the crypto operation */
 	skcipher_request_set_tfm(&areq->cra_u.skcipher_req, tfm);
 	skcipher_request_set_crypt(&areq->cra_u.skcipher_req, areq->tsgl,
-				   areq->first_rsgl.sgl.sg, len, ctx->iv);
+				   areq->first_rsgl.sgl.sgt.sgl, len, ctx->iv);
 
-	/*
-	 * Force synchronous processing.  The async (AIO) path passed the
-	 * socket-wide ctx->iv into the request, which the worker
-	 * dereferenced after the socket lock was dropped, letting a
-	 * concurrent sendmsg(ALG_SET_IV) inject an attacker IV.  Mainline
-	 * removed the AIO socket path in commit fcc77d33a34c ("net: Remove
-	 * support for AIO on sockets"); these stable trees lack the
-	 * per-request ctx->state used by newer kernels, so the minimal safe
-	 * fix is to always complete synchronously.
-	 */
-	skcipher_request_set_callback(&areq->cra_u.skcipher_req,
-				      CRYPTO_TFM_REQ_MAY_SLEEP |
-				      CRYPTO_TFM_REQ_MAY_BACKLOG,
-				      crypto_req_done, &ctx->wait);
-	err = crypto_wait_req(ctx->enc ?
-		crypto_skcipher_encrypt(&areq->cra_u.skcipher_req) :
-		crypto_skcipher_decrypt(&areq->cra_u.skcipher_req),
-				      &ctx->wait);
+	if (msg->msg_iocb && !is_sync_kiocb(msg->msg_iocb)) {
+		/* AIO operation */
+		sock_hold(sk);
+		areq->iocb = msg->msg_iocb;
+
+		/* Remember output size that will be generated. */
+		areq->outlen = len;
+
+		skcipher_request_set_callback(&areq->cra_u.skcipher_req,
+					      CRYPTO_TFM_REQ_MAY_SLEEP,
+					      af_alg_async_cb, areq);
+		err = ctx->enc ?
+			crypto_skcipher_encrypt(&areq->cra_u.skcipher_req) :
+			crypto_skcipher_decrypt(&areq->cra_u.skcipher_req);
+
+		/* AIO operation in progress */
+		if (err == -EINPROGRESS)
+			return -EIOCBQUEUED;
+
+		sock_put(sk);
+	} else {
+		/* Synchronous operation */
+		skcipher_request_set_callback(&areq->cra_u.skcipher_req,
+					      CRYPTO_TFM_REQ_MAY_SLEEP |
+					      CRYPTO_TFM_REQ_MAY_BACKLOG,
+					      crypto_req_done, &ctx->wait);
+		err = crypto_wait_req(ctx->enc ?
+			crypto_skcipher_encrypt(&areq->cra_u.skcipher_req) :
+			crypto_skcipher_decrypt(&areq->cra_u.skcipher_req),
+						 &ctx->wait);
+	}
 
 
 free:
@@ -181,7 +194,6 @@ static struct proto_ops algif_skcipher_ops = {
 
 	.release	=	af_alg_release,
 	.sendmsg	=	skcipher_sendmsg,
-	.sendpage	=	af_alg_sendpage,
 	.recvmsg	=	skcipher_recvmsg,
 	.poll		=	af_alg_poll,
 };
@@ -233,18 +245,6 @@ static int skcipher_sendmsg_nokey(struct socket *sock, struct msghdr *msg,
 	return skcipher_sendmsg(sock, msg, size);
 }
 
-static ssize_t skcipher_sendpage_nokey(struct socket *sock, struct page *page,
-				       int offset, size_t size, int flags)
-{
-	int err;
-
-	err = skcipher_check_key(sock);
-	if (err)
-		return err;
-
-	return af_alg_sendpage(sock, page, offset, size, flags);
-}
-
 static int skcipher_recvmsg_nokey(struct socket *sock, struct msghdr *msg,
 				  size_t ignored, int flags)
 {
@@ -272,7 +272,6 @@ static struct proto_ops algif_skcipher_ops_nokey = {
 
 	.release	=	af_alg_release,
 	.sendmsg	=	skcipher_sendmsg_nokey,
-	.sendpage	=	skcipher_sendpage_nokey,
 	.recvmsg	=	skcipher_recvmsg_nokey,
 	.poll		=	af_alg_poll,
 };
@@ -300,7 +299,7 @@ static void skcipher_sock_destruct(struct sock *sk)
 	struct alg_sock *pask = alg_sk(psk);
 	struct crypto_skcipher *tfm = pask->private;
 
-	af_alg_pull_tsgl(sk, ctx->used, NULL);
+	af_alg_pull_tsgl(sk, ctx->used, NULL, 0);
 	sock_kzfree_s(sk, ctx->iv, crypto_skcipher_ivsize(tfm));
 	sock_kfree_s(sk, ctx, ctx->len);
 	af_alg_release_parent(sk);

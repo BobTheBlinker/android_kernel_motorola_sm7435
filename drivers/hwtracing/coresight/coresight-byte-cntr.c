@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
- *
- * Description: CoreSight Trace Memory Controller driver
+/*
+ * Copyright (c) 2021, 2023-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
+
 #include <linux/interrupt.h>
 #include <linux/dma-mapping.h>
 #include <linux/fs.h>
@@ -57,39 +57,31 @@ static irqreturn_t etr_handler(int irq, void *data)
 
 
 static long tmc_etr_flush_remaining_bytes(struct tmc_drvdata *tmcdrvdata, long offset,
-			char **bufpp)
+			size_t len, char **bufpp)
 {
-	long rwp_offset, req_size, actual = 0;
+	long req_size, actual = 0;
 	struct etr_buf *etr_buf;
 	struct device *dev;
-	int rc = 0;
+	struct byte_cntr *byte_cntr_data;
 
-	pr_err("[%s][%d][%s] enter\n", current->comm, current->pid, __func__);
-	if (!tmcdrvdata) {
-		pr_err("[%s][%d][%s] invalid tmcdrvdata\n", current->comm, current->pid, __func__);
+	if (!tmcdrvdata)
 		return -EINVAL;
-	}
+
+	byte_cntr_data = tmcdrvdata->byte_cntr;
+	if (!byte_cntr_data)
+		return -EINVAL;
 
 	etr_buf = tmcdrvdata->sysfs_buf;
 	dev = &tmcdrvdata->csdev->dev;
 
-	rc = pm_runtime_get_sync(dev->parent);
-	if (rc < 0) {
-		pr_err("[%s][%d][%s] pm runtime failed: %d\n", current->comm, current->pid, __func__, rc);
-		pm_runtime_put_noidle(dev->parent);
-		return rc;
-	}
+	req_size = ((byte_cntr_data->rwp_offset < offset) ? tmcdrvdata->size : 0) +
+		byte_cntr_data->rwp_offset - offset;
 
-	rwp_offset = tmc_get_rwp_offset(tmcdrvdata);
-	pm_runtime_put(dev->parent);
-	req_size = ((rwp_offset < offset) ? tmcdrvdata->size : 0) +
-		rwp_offset - offset;
+	if (req_size > len)
+		req_size = len;
 
 	if (req_size > 0)
 		actual = tmc_etr_buf_get_data(etr_buf, offset, req_size, bufpp);
-
-	pr_err("[%s][%d][%s] rwp_offset 0x%llx offset 0x%llx req_size 0x%llx actual 0x%llx\n",
-		current->comm, current->pid, __func__, rwp_offset, offset, req_size, actual);
 
 	return actual;
 }
@@ -101,6 +93,7 @@ static ssize_t tmc_etr_byte_cntr_read(struct file *fp, char __user *data,
 	struct byte_cntr *byte_cntr_data = fp->private_data;
 	struct tmc_drvdata *tmcdrvdata = byte_cntr_data->tmcdrvdata;
 	char *bufp = NULL;
+	long actual;
 	int ret = 0;
 
 	if (!data)
@@ -108,9 +101,10 @@ static ssize_t tmc_etr_byte_cntr_read(struct file *fp, char __user *data,
 
 	mutex_lock(&byte_cntr_data->byte_cntr_lock);
 	if (!byte_cntr_data->read_active) {
-		len = tmc_etr_flush_remaining_bytes(tmcdrvdata,
-					byte_cntr_data->offset, &bufp);
-		if (len > 0) {
+		actual = tmc_etr_flush_remaining_bytes(tmcdrvdata,
+				byte_cntr_data->offset, len, &bufp);
+		if (actual > 0) {
+			len = actual;
 			goto copy;
 		} else {
 			ret = -EINVAL;
@@ -127,9 +121,10 @@ static ssize_t tmc_etr_byte_cntr_read(struct file *fp, char __user *data,
 				return -ERESTARTSYS;
 			mutex_lock(&byte_cntr_data->byte_cntr_lock);
 			if (!byte_cntr_data->read_active) {
-				len = tmc_etr_flush_remaining_bytes(tmcdrvdata,
-						byte_cntr_data->offset, &bufp);
-				if (len > 0) {
+				actual = tmc_etr_flush_remaining_bytes(tmcdrvdata,
+						byte_cntr_data->offset, len, &bufp);
+				if (actual > 0) {
+					len = actual;
 					goto copy;
 				} else {
 					ret = -EINVAL;
@@ -142,9 +137,10 @@ static ssize_t tmc_etr_byte_cntr_read(struct file *fp, char __user *data,
 				   byte_cntr_data->block_size, &len, &bufp);
 
 	} else {
-		len = tmc_etr_flush_remaining_bytes(tmcdrvdata,
-					byte_cntr_data->offset, &bufp);
-		if (len > 0) {
+		actual = tmc_etr_flush_remaining_bytes(tmcdrvdata,
+				byte_cntr_data->offset, len, &bufp);
+		if (actual > 0) {
+			len = actual;
 			goto copy;
 		} else {
 			ret = -EINVAL;
@@ -202,6 +198,8 @@ void tmc_etr_byte_cntr_stop(struct byte_cntr *byte_cntr_data)
 		return;
 
 	mutex_lock(&byte_cntr_data->byte_cntr_lock);
+	byte_cntr_data->rwp_offset =
+		tmc_get_rwp_offset(byte_cntr_data->tmcdrvdata);
 	byte_cntr_data->enable = false;
 	byte_cntr_data->read_active = false;
 	atomic_set(&byte_cntr_data->irq_cnt, 0);
@@ -218,8 +216,6 @@ static int tmc_etr_byte_cntr_release(struct inode *in, struct file *fp)
 {
 	struct byte_cntr *byte_cntr_data = fp->private_data;
 	struct device *dev = &byte_cntr_data->tmcdrvdata->csdev->dev;
-	long rwp_offset = -EINVAL;
-	int rc;
 
 	mutex_lock(&byte_cntr_data->byte_cntr_lock);
 	byte_cntr_data->read_active = false;
@@ -232,19 +228,9 @@ static int tmc_etr_byte_cntr_release(struct inode *in, struct file *fp)
 
 	disable_irq_wake(byte_cntr_data->byte_cntr_irq);
 
-	rc = pm_runtime_get_sync(dev->parent);
-	if (rc < 0) {
-		pm_runtime_put_noidle(dev->parent);
-
-	} else {
-		rwp_offset = tmc_get_rwp_offset(byte_cntr_data->tmcdrvdata);
-		pm_runtime_put(dev->parent);
-	}
-
-	dev_err(dev, "[%s][%d]send data total size: %lld bytes, irq_cnt: %lld, offset: %lld\n",
-		current->comm, current->pid,
-		byte_cntr_data->total_size, byte_cntr_data->total_irq, rwp_offset);
-	byte_cntr_data->total_irq = 0;
+	dev_dbg(dev, "send data total size: %lld bytes, irq_cnt: %lld, offset: %lu, rwp_offset: %lu\n",
+		byte_cntr_data->total_size, byte_cntr_data->total_irq,
+		byte_cntr_data->offset,	byte_cntr_data->rwp_offset);
 	mutex_unlock(&byte_cntr_data->byte_cntr_lock);
 
 	return 0;
@@ -283,6 +269,7 @@ static int tmc_etr_byte_cntr_open(struct inode *in, struct file *fp)
 	byte_cntr_data->read_active = true;
 	byte_cntr_data->total_size = 0;
 	byte_cntr_data->offset = tmc_get_rwp_offset(tmcdrvdata);
+	byte_cntr_data->total_irq = 0;
 	mutex_unlock(&byte_cntr_data->byte_cntr_lock);
 	return 0;
 }
@@ -317,8 +304,7 @@ static int byte_cntr_register_chardev(struct byte_cntr *byte_cntr_data)
 	if (ret)
 		goto exit_unreg_chrdev_region;
 
-	byte_cntr_data->driver_class = class_create(THIS_MODULE,
-						   byte_cntr_data->class_name);
+	byte_cntr_data->driver_class = class_create(byte_cntr_data->class_name);
 	if (IS_ERR(byte_cntr_data->driver_class)) {
 		ret = -ENOMEM;
 		pr_err("class_create failed %d\n", ret);

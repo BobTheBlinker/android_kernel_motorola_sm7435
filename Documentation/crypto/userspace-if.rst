@@ -131,9 +131,9 @@ from the kernel crypto API. If the buffer is too small for the message
 digest, the flag MSG_TRUNC is set by the kernel.
 
 In order to set a message digest key, the calling application must use
-the setsockopt() option of ALG_SET_KEY. If the key is not set the HMAC
-operation is performed without the initial HMAC state change caused by
-the key.
+the setsockopt() option of ALG_SET_KEY or ALG_SET_KEY_BY_KEY_SERIAL. If the
+key is not set the HMAC operation is performed without the initial HMAC state
+change caused by the key.
 
 Symmetric Cipher API
 --------------------
@@ -328,10 +328,33 @@ CRYPTO_USER_API_RNG_CAVP option:
 Zero-Copy Interface
 -------------------
 
-AF_ALG used to have zero-copy support, but it was removed due to it being a
-frequent source of vulnerabilities.  For backwards compatibility the splice()
-and sendfile() system calls are still supported, but the kernel will make an
-internal copy of the data before passing it to the crypto code.
+In addition to the send/write/read/recv system call family, the AF_ALG
+interface can be accessed with the zero-copy interface of
+splice/vmsplice. As the name indicates, the kernel tries to avoid a copy
+operation into kernel space.
+
+The zero-copy operation requires data to be aligned at the page
+boundary. Non-aligned data can be used as well, but may require more
+operations of the kernel which would defeat the speed gains obtained
+from the zero-copy interface.
+
+The system-inherent limit for the size of one zero-copy operation is 16
+pages. If more data is to be sent to AF_ALG, user space must slice the
+input into segments with a maximum size of 16 pages.
+
+Zero-copy can be used with the following code example (a complete
+working example is provided with libkcapi):
+
+::
+
+    int pipes[2];
+
+    pipe(pipes);
+    /* input data in iov */
+    vmsplice(pipes[1], iov, iovlen, SPLICE_F_GIFT);
+    /* opfd is the file descriptor returned from accept() system call */
+    splice(pipes[0], NULL, opfd, NULL, ret, 0);
+    read(opfd, out, outlen);
 
 
 Setsockopt Interface
@@ -358,6 +381,15 @@ mentioned optname:
    -  the AEAD cipher type
 
    -  the RNG cipher type to provide the seed
+
+- ALG_SET_KEY_BY_KEY_SERIAL -- Setting the key via keyring key_serial_t.
+   This operation behaves the same as ALG_SET_KEY. The decrypted
+   data is copied from a keyring key, and uses that data as the
+   key for symmetric encryption.
+
+   The passed in key_serial_t must have the KEY_(POS|USR|GRP|OTH)_SEARCH
+   permission set, otherwise -EPERM is returned. Supports key types: user,
+   logon, encrypted, and trusted.
 
 -  ALG_SET_AEAD_AUTHSIZE -- Setting the authentication tag size for
    AEAD ciphers. For a encryption operation, the authentication tag of

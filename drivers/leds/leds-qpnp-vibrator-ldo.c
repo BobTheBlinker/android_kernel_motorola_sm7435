@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Copyright (c) 2017-2020, The Linux Foundation. All rights reserved. */
-/* Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved. */
+/*
+ * Copyright (c) 2017-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022, 2024, Qualcomm Innovation Center, Inc. All rights reserved.
+ */
 
 #define pr_fmt(fmt)	"%s: " fmt, __func__
 
@@ -52,10 +54,6 @@ struct vib_ldo_chip {
 	u64			vib_play_ms;
 	bool			vib_enabled;
 	bool			disable_overdrive;
-
-	bool			dis_short_long;
-	int			dis_long_ms;
-	int			vmax_uV_long;
 };
 
 static inline int qpnp_vib_ldo_poll_status(struct vib_ldo_chip *chip)
@@ -146,15 +144,6 @@ static int qpnp_vibrator_play_on(struct vib_ldo_chip *chip)
 	int ret;
 
 	volt_uV = chip->vmax_uV;
-
-	if (chip->dis_short_long) {
-		pr_debug("vib in dis short and long, play ms=%d, dis_longms=%d, vmax_uV=%d, vmax_uV_long=%d\n",
-				chip->vib_play_ms, chip->dis_long_ms, chip->vmax_uV, chip->vmax_uV_long);
-		if (chip->vib_play_ms > chip->dis_long_ms) {
-			volt_uV = chip->vmax_uV_long;
-		}
-	}
-
 	if (!chip->disable_overdrive)
 		volt_uV = chip->overdrive_volt_uV ? chip->overdrive_volt_uV
 				: min(chip->vmax_uV * 2, QPNP_VIB_LDO_VMAX_UV);
@@ -164,7 +153,7 @@ static int qpnp_vibrator_play_on(struct vib_ldo_chip *chip)
 		pr_err("set voltage = %duV failed, ret=%d\n", volt_uV, ret);
 		return ret;
 	}
-	pr_debug("voltage set to %d uV\n", volt_uV);
+	pr_info("voltage set to %d uV\n", volt_uV);
 
 	ret = qpnp_vib_ldo_enable(chip, true);
 	if (ret < 0) {
@@ -263,28 +252,6 @@ static int qpnp_vib_parse_dt(struct device *dev, struct vib_ldo_chip *chip)
 		return ret;
 	}
 
-	chip->dis_short_long = of_property_read_bool(dev->of_node,
-                                        "qcom,vib-dis-short-long");
-
-	if (chip->dis_short_long) {
-		pr_warn("read dis_short_long true");
-		ret = of_property_read_u32(dev->of_node, "qcom,vib-dis-short-long-val",
-			&chip->dis_long_ms);
-		if (ret < 0) {
-			pr_err("qcom,vib-dis-short-long-val property read failed, ret=%d\n", ret);
-			return ret;
-		}
-		pr_warn("read dis_long_ms=%d\n", chip->dis_long_ms);
-
-		ret = of_property_read_u32(dev->of_node, "qcom,vib-ldo-volt-uv-long",
-			&chip->vmax_uV_long);
-		if (ret < 0) {
-			pr_err("qcom,vib-ldo-volt-uv-long property read failed, ret=%d\n", ret);
-			return ret;
-		}
-		pr_warn("read vmax_uV_long=%d\n", chip->vmax_uV_long);
-	}
-
 	chip->disable_overdrive = of_property_read_bool(dev->of_node,
 					"qcom,disable-overdrive");
 
@@ -317,7 +284,7 @@ static enum led_brightness qpnp_vib_brightness_get(struct led_classdev *cdev)
 	return chip->state;
 }
 
-static void qpnp_vib_brightness_set(struct led_classdev *cdev,
+static int qpnp_vib_brightness_set(struct led_classdev *cdev,
 			enum led_brightness level)
 {
 	struct vib_ldo_chip *chip = container_of(cdev, struct vib_ldo_chip,
@@ -335,10 +302,11 @@ static void qpnp_vib_brightness_set(struct led_classdev *cdev,
 			hrtimer_cancel(&chip->overdrive_timer);
 			cancel_work_sync(&chip->overdrive_work);
 		}
-		qpnp_vib_ldo_enable(chip, false);
+		ret = qpnp_vib_ldo_enable(chip, false);
 	}
 
-	pr_debug("vibrator state=%d\n", chip->state);
+	pr_info("vibrator state=%d\n", chip->state);
+	return ret;
 }
 
 static int qpnp_vibrator_ldo_suspend(struct device *dev)
@@ -398,7 +366,7 @@ static int qpnp_vibrator_ldo_probe(struct platform_device *pdev)
 
 	chip->cdev.name = "vibrator";
 	chip->cdev.brightness_get = qpnp_vib_brightness_get;
-	chip->cdev.brightness_set = qpnp_vib_brightness_set;
+	chip->cdev.brightness_set_blocking = qpnp_vib_brightness_set;
 	chip->cdev.max_brightness = 100;
 	ret = devm_led_classdev_register(&pdev->dev, &chip->cdev);
 	if (ret < 0) {
@@ -460,4 +428,4 @@ static struct platform_driver qpnp_vibrator_ldo_driver = {
 module_platform_driver(qpnp_vibrator_ldo_driver);
 
 MODULE_DESCRIPTION("QPNP Vibrator-LDO driver");
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");

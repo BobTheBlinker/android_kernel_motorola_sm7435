@@ -30,6 +30,7 @@ static struct {
 
 static void gio_bus_release(struct device *dev)
 {
+	kfree(dev);
 }
 
 static struct device gio_bus = {
@@ -100,8 +101,6 @@ int gio_device_register(struct gio_device *giodev)
 {
 	giodev->dev.bus = &gio_bus_type;
 	giodev->dev.parent = &gio_bus;
-	giodev->dev.release = gio_release_dev;
-
 	return device_register(&giodev->dev);
 }
 EXPORT_SYMBOL_GPL(gio_device_register);
@@ -133,21 +132,24 @@ static int gio_device_probe(struct device *dev)
 	if (!drv->probe)
 		return error;
 
+	gio_dev_get(gio_dev);
+
 	match = gio_match_device(drv->id_table, gio_dev);
 	if (match)
 		error = drv->probe(gio_dev, match);
+	if (error)
+		gio_dev_put(gio_dev);
 
 	return error;
 }
 
-static int gio_device_remove(struct device *dev)
+static void gio_device_remove(struct device *dev)
 {
 	struct gio_device *gio_dev = to_gio_device(dev);
 	struct gio_driver *drv = to_gio_driver(dev->driver);
 
-	if (dev->driver && drv->remove)
+	if (drv->remove)
 		drv->remove(gio_dev);
-	return 0;
 }
 
 static void gio_device_shutdown(struct device *dev)
@@ -197,9 +199,9 @@ static struct attribute *gio_dev_attrs[] = {
 };
 ATTRIBUTE_GROUPS(gio_dev);
 
-static int gio_device_uevent(struct device *dev, struct kobj_uevent_env *env)
+static int gio_device_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
-	struct gio_device *gio_dev = to_gio_device(dev);
+	const struct gio_device *gio_dev = to_gio_device(dev);
 
 	add_uevent_var(env, "MODALIAS=gio:%x", gio_dev->id.id);
 	return 0;
@@ -361,6 +363,8 @@ static void ip22_check_gio(int slotno, unsigned long addr, int irq)
 		printk(KERN_INFO "GIO: slot %d : %s (id %x)\n",
 		       slotno, name, id);
 		gio_dev = kzalloc(sizeof *gio_dev, GFP_KERNEL);
+		if (!gio_dev)
+			return;
 		gio_dev->name = name;
 		gio_dev->slotno = slotno;
 		gio_dev->id.id = id;
@@ -369,8 +373,7 @@ static void ip22_check_gio(int slotno, unsigned long addr, int irq)
 		gio_dev->resource.flags = IORESOURCE_MEM;
 		gio_dev->irq = irq;
 		dev_set_name(&gio_dev->dev, "%d", slotno);
-		if (gio_device_register(gio_dev))
-			gio_dev_put(gio_dev);
+		gio_device_register(gio_dev);
 	} else
 		printk(KERN_INFO "GIO: slot %d : Empty\n", slotno);
 }

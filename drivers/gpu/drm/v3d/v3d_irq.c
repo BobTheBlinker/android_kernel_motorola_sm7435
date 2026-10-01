@@ -190,10 +190,7 @@ v3d_hub_irq(int irq, void *arg)
 		};
 		const char *client = "?";
 
-		V3D_WRITE(V3D_MMU_CTL,
-			  V3D_READ(V3D_MMU_CTL) & (V3D_MMU_CTL_CAP_EXCEEDED |
-						   V3D_MMU_CTL_PT_INVALID |
-						   V3D_MMU_CTL_WRITE_VIOLATION));
+		V3D_WRITE(V3D_MMU_CTL, V3D_READ(V3D_MMU_CTL));
 
 		if (v3d->ver >= 41) {
 			axi_id = axi_id >> 5;
@@ -229,7 +226,7 @@ v3d_irq_init(struct v3d_dev *v3d)
 		V3D_CORE_WRITE(core, V3D_CTL_INT_CLR, V3D_CORE_IRQS);
 	V3D_WRITE(V3D_HUB_INT_CLR, V3D_HUB_IRQS);
 
-	irq = platform_get_irq(v3d_to_pdev(v3d), 1);
+	irq = platform_get_irq_optional(v3d_to_pdev(v3d), 1);
 	if (irq == -EPROBE_DEFER)
 		return irq;
 	if (irq > 0) {
@@ -294,7 +291,6 @@ void
 v3d_irq_disable(struct v3d_dev *v3d)
 {
 	int core;
-	int i;
 
 	/* Disable all interrupts. */
 	for (core = 0; core < v3d->cores; core++)
@@ -302,7 +298,7 @@ v3d_irq_disable(struct v3d_dev *v3d)
 	V3D_WRITE(V3D_HUB_INT_MSK_SET, ~0);
 
 	/* Finish any interrupt handler still in flight. */
-	for (i = 0; i < V3D_MAX_IRQS; i++) {
+	for (int i = 0; i < V3D_MAX_IRQS; i++) {
 		if (v3d->irq[i])
 			synchronize_irq(v3d->irq[i]);
 	}

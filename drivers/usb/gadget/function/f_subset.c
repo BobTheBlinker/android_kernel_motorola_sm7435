@@ -6,7 +6,6 @@
  * Copyright (C) 2008 Nokia Corporation
  */
 
-#include <linux/cleanup.h>
 #include <linux/slab.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -368,9 +367,7 @@ geth_bind(struct usb_configuration *c, struct usb_function *f)
 	 * until we're activated via set_alt().
 	 */
 
-	DBG(cdev, "CDC Subset: %s speed IN/%s OUT/%s\n",
-			gadget_is_superspeed(c->cdev->gadget) ? "super" :
-			gadget_is_dualspeed(c->cdev->gadget) ? "dual" : "full",
+	DBG(cdev, "CDC Subset: IN/%s OUT/%s\n",
 			geth->port.in_ep->name, geth->port.out_ep->name);
 	return 0;
 
@@ -452,14 +449,8 @@ static struct usb_function_instance *geth_alloc_inst(void)
 static void geth_free(struct usb_function *f)
 {
 	struct f_gether *eth;
-	struct f_gether_opts *opts;
-
-	opts = container_of(f->fi, struct f_gether_opts, func_inst);
 
 	eth = func_to_geth(f);
-	mutex_lock(&opts->lock);
-	opts->refcnt--;
-	mutex_unlock(&opts->lock);
 	kfree(eth);
 }
 
