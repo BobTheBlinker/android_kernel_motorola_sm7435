@@ -80,9 +80,13 @@
 #define EPOLL_PACKED
 #endif
 
+#ifndef __BIONIC__
+/* bionic provides its own struct epoll_event */
 struct epoll_event {
 	__poll_t events;
 	__u64 data;
 } EPOLL_PACKED;
+#endif
+
 
 #endif /* _UAPI_LINUX_EVENTPOLL_H */
